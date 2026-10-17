@@ -4,7 +4,7 @@
 # Formula SVG fallback also requires the pinned local Node runtime:
 #   cd formula_runtime && npm install --ignore-scripts --no-audit --no-fund
 
--e ./MinerU[pipeline,mlx]
+-e ./external/MinerU[pipeline,mlx]
 PyMuPDF==1.26.6
 openai==2.16.0
 python-dotenv==1.2.1

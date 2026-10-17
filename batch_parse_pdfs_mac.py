@@ -26,7 +26,7 @@ from typing import Any
 from uuid import uuid4
 
 ROOT_DIR = Path(__file__).resolve().parent
-LOCAL_MINERU_DIR = ROOT_DIR / "MinerU"
+LOCAL_MINERU_DIR = ROOT_DIR / "external" / "MinerU"
 DEFAULT_INPUT_DIR = LOCAL_MINERU_DIR / "demo" / "pdfs"
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "demo-output-mac"
 

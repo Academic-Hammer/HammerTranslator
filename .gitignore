@@ -29,21 +29,17 @@ node_modules/
 tmp/
 .cache/
 
-# Local pipeline jobs, uploaded PDFs, and generated output
+# Local pipeline jobs and uploaded PDFs
 var/
 input_pdf/
-output/
-output-*/
 
-# Local evaluation datasets and archives
-270-new/
-pdfAssess.zip
+# Local datasets, historical outputs, and archives
+local_data/
 
-# Historical/reference projects retained locally during cleanup
-Colayout-pure/
-data-preprocess-v2/
+# Historical projects retained locally during cleanup
+legacy/projects/
 
-# Vendored third-party source used by the current Mac environment. The cleanup
-# baseline records its version; the deployment step will replace this local tree
-# with a pinned, reproducible dependency.
-MinerU/
+# External source trees used by the current local environment. Keep the
+# directory documentation, but do not version third-party repositories here.
+external/*
+!external/README.md

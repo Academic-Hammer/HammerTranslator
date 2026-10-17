@@ -20,7 +20,7 @@ from .units import TranslationPlan, TranslationUnit
 STYLE_SCHEMA_VERSION = "layout-style-v1"
 MEASUREMENT_ENGINE_VERSION = "layout-metrics-v2"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-FONTS_DIR = PROJECT_ROOT / "Colayout-pure" / "fonts"
+FONTS_DIR = PROJECT_ROOT / "external" / "Colayout-pure" / "fonts"
 
 
 @dataclass(frozen=True)

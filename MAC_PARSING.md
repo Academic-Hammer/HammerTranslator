@@ -2,7 +2,7 @@
 
 This entry point is designed for the local Apple-Silicon machine. It does not
 set CUDA variables and never uses the Linux server path embedded in the older
-`batch_parse_pdfs.py`.
+`legacy/scripts/batch_parse_pdfs.py`.
 
 ## Hardware path
 
