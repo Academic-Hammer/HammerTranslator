@@ -24,11 +24,39 @@ class PackagingContractTest(unittest.TestCase):
                 "hammer-translate",
                 "hammer-reflow",
                 "hammer-mineru-adapt",
+                "hammer-doctor",
             },
         )
         for target in project["scripts"].values():
             module_name, attribute = target.split(":", maxsplit=1)
             self.assertTrue(callable(getattr(import_module(module_name), attribute)))
+
+    def test_installed_runtime_resources_are_declared_and_match_source(self) -> None:
+        package_resources = PROJECT_ROOT / "hammer_translator" / "resources"
+        pairs = (
+            (
+                PROJECT_ROOT / "translation_config.yaml",
+                package_resources / "translation_config.yaml",
+            ),
+            (
+                PROJECT_ROOT / "assets" / "fonts" / "manifest.json",
+                package_resources / "fonts" / "manifest.json",
+            ),
+            (
+                PROJECT_ROOT / "formula_runtime" / "mathjax_to_svg.mjs",
+                package_resources / "formula_runtime" / "mathjax_to_svg.mjs",
+            ),
+            (
+                PROJECT_ROOT / "formula_runtime" / "package.json",
+                package_resources / "formula_runtime" / "package.json",
+            ),
+            (
+                PROJECT_ROOT / "formula_runtime" / "package-lock.json",
+                package_resources / "formula_runtime" / "package-lock.json",
+            ),
+        )
+        for source, packaged in pairs:
+            self.assertEqual(source.read_bytes(), packaged.read_bytes())
 
     def test_core_does_not_contain_parser_or_gpu_frameworks(self) -> None:
         pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8").lower()

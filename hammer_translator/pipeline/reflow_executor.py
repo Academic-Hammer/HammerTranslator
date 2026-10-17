@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from hammer_translator.reflow.schema import ReflowReportOutput
+from hammer_translator.runtime_paths import child_process_cwd
 from hammer_translator.translation.jsonio import write_json_atomic
 from hammer_translator.translation.output_schema import TranslationArtifactOutput
 
@@ -23,8 +24,7 @@ from .process import CancellableProcessRunner
 from .schema import PipelineStage, ProducedArtifact, StageExecutionResult, WarningRecord
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-REFLOW_SCRIPT = PROJECT_ROOT / "render_translated_pdf.py"
+REFLOW_MODULE = "hammer_translator.reflow"
 REFLOW_STAGE_MANIFEST_VERSION = "pipeline-reflow-v1"
 
 
@@ -37,13 +37,19 @@ class ReflowStageExecutor:
         self,
         *,
         python_executable: str | Path | None = None,
-        reflow_script: str | Path = REFLOW_SCRIPT,
+        reflow_module: str = REFLOW_MODULE,
+        reflow_script: str | Path | None = None,
         poll_interval: float = 0.25,
         heartbeat_interval: float = 5.0,
         progress_sink: Callable[[str], None] | None = None,
     ):
         self.python_executable = str(python_executable or sys.executable)
-        self.reflow_script = Path(reflow_script).expanduser().resolve()
+        self.reflow_module = reflow_module
+        self.reflow_script = (
+            Path(reflow_script).expanduser().resolve()
+            if reflow_script is not None
+            else None
+        )
         self.process_runner = CancellableProcessRunner(
             poll_interval=poll_interval,
             heartbeat_interval=heartbeat_interval,
@@ -123,10 +129,15 @@ class ReflowStageExecutor:
         output_pdf: Path,
         feedback_path: Path,
     ) -> list[str]:
+        entrypoint = (
+            [str(self.reflow_script)]
+            if self.reflow_script is not None
+            else ["-m", self.reflow_module]
+        )
         command = [
             self.python_executable,
             "-u",
-            str(self.reflow_script),
+            *entrypoint,
             str(translation_path),
             "--output",
             str(output_pdf),
@@ -147,7 +158,7 @@ class ReflowStageExecutor:
         progress: ProgressCallback,
         is_cancel_requested: CancellationCheck,
     ) -> None:
-        if not self.reflow_script.is_file():
+        if self.reflow_script is not None and not self.reflow_script.is_file():
             raise StageExecutionError(
                 f"Reflow dependency was not found: {self.reflow_script}",
                 code="reflow_entrypoint_missing",
@@ -159,7 +170,7 @@ class ReflowStageExecutor:
                 output_pdf,
                 feedback_path,
             ),
-            cwd=PROJECT_ROOT,
+            cwd=child_process_cwd(context.job_dir),
             log_path=context.job_dir / "logs" / "reflowing.log",
             executor_name=self.name,
             heartbeat_message="Reflow is still running",

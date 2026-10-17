@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
+from .runtime_paths import FONTS_DIR_ENV, runtime_paths
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_FONTS_DIR = PROJECT_ROOT / "assets" / "fonts"
-FONT_MANIFEST_PATH = DEFAULT_FONTS_DIR / "manifest.json"
-FONT_DIRECTORY_ENV = "HAMMERTRANSLATOR_FONTS_DIR"
+DEFAULT_FONTS_DIR = runtime_paths().fonts_dir
+FONT_MANIFEST_PATH = runtime_paths().font_manifest_path
+FONT_DIRECTORY_ENV = FONTS_DIR_ENV
 
 
 class FontAssetError(RuntimeError):
@@ -30,10 +29,11 @@ def _sha256(path: Path) -> str:
 
 @lru_cache(maxsize=1)
 def font_manifest() -> dict[str, Any]:
+    manifest_path = runtime_paths().font_manifest_path
     try:
-        payload = json.loads(FONT_MANIFEST_PATH.read_text(encoding="utf-8"))
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise FontAssetError(f"font manifest is unreadable: {FONT_MANIFEST_PATH}") from exc
+        raise FontAssetError(f"font manifest is unreadable: {manifest_path}") from exc
     if payload.get("schema_version") != "hammertranslator-font-assets-v1":
         raise FontAssetError("font manifest has an unsupported schema version")
     fonts = payload.get("fonts")
@@ -43,8 +43,7 @@ def font_manifest() -> dict[str, Any]:
 
 
 def configured_fonts_dir() -> Path:
-    configured = os.environ.get(FONT_DIRECTORY_ENV, "").strip()
-    return Path(configured).expanduser().resolve() if configured else DEFAULT_FONTS_DIR
+    return runtime_paths().fonts_dir
 
 
 def font_filename(category: str) -> str:
@@ -102,10 +101,11 @@ def resolve_registered_font(record: Mapping[str, Any]) -> Path:
         candidates.append(Path(raw_path).expanduser().resolve())
     if filename:
         candidates.append((configured_fonts_dir() / filename).resolve())
-    if relative:
+    source_root = runtime_paths().source_root
+    if relative and source_root is not None:
         relative_path = Path(relative)
         if not relative_path.is_absolute() and ".." not in relative_path.parts:
-            candidates.append((PROJECT_ROOT / relative_path).resolve())
+            candidates.append((source_root / relative_path).resolve())
 
     seen: set[Path] = set()
     changed: list[Path] = []

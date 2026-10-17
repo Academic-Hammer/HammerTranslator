@@ -17,6 +17,8 @@ from typing import Any, Iterable, TYPE_CHECKING
 
 import fitz
 
+from hammer_translator.runtime_paths import portable_resource_label, runtime_paths
+
 from .formula import FormulaBinding
 
 if TYPE_CHECKING:
@@ -24,9 +26,10 @@ if TYPE_CHECKING:
 
 
 FORMULA_ASSET_CONTRACT_VERSION = "formula-assets-v1"
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MATHJAX_SCRIPT = PROJECT_ROOT / "formula_runtime" / "mathjax_to_svg.mjs"
-DEFAULT_MATHJAX_PACKAGE = PROJECT_ROOT / "formula_runtime" / "node_modules" / "mathjax"
+DEFAULT_MATHJAX_SCRIPT = runtime_paths().formula_runtime_dir / "mathjax_to_svg.mjs"
+DEFAULT_MATHJAX_PACKAGE = (
+    runtime_paths().formula_runtime_dir / "node_modules" / "mathjax"
+)
 
 
 class FormulaAssetError(ValueError):
@@ -597,7 +600,7 @@ def build_formula_asset_contract(
         "mathjax": {
             "available": renderer.available,
             "version": renderer.version,
-            "script": renderer.script_path.relative_to(PROJECT_ROOT).as_posix(),
+            "script": portable_resource_label(renderer.script_path),
         },
         "assets": ordered,
         "stats": {

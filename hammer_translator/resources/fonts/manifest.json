@@ -1,0 +1,20 @@
+{
+  "schema_version": "hammertranslator-font-assets-v1",
+  "fonts": {
+    "SimHei.ttf": {
+      "categories": ["title", "heading"],
+      "sha256": "336a838f4a78e150826be608dae69de59d50948c3d2b71760e096ae764154bdc",
+      "redistributed": false
+    },
+    "SimSun.ttf": {
+      "categories": ["body"],
+      "sha256": "ca4da082cd970f0c8abaa79f213ddcbc475f7b5afabcb81b385998f9ebfbb53f",
+      "redistributed": false
+    },
+    "SimKai.ttf": {
+      "categories": ["caption"],
+      "sha256": "f49873fbe1689f1a37ed0f5765eb7d989d8a3b75210d1f1b66b74b043a1871be",
+      "redistributed": false
+    }
+  }
+}

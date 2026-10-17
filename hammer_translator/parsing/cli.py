@@ -26,11 +26,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-LOCAL_MINERU_DIR = PROJECT_ROOT / "external" / "MinerU"
-MINERU_SOURCE_ENV = "HAMMERTRANSLATOR_MINERU_SOURCE"
-DEFAULT_INPUT_DIR = PROJECT_ROOT / "input_pdf"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "demo-output"
+from hammer_translator.runtime_paths import MINERU_SOURCE_ENV, runtime_paths
+
+LOCAL_MINERU_DIR = runtime_paths().local_mineru_dir
+DEFAULT_INPUT_DIR = runtime_paths().input_dir
+DEFAULT_OUTPUT_DIR = runtime_paths().output_dir
 
 LOGGER = logging.getLogger("pdf-parser")
 PARSE_MANIFEST_SCHEMA_VERSION = "mineru-parse-v1"
@@ -149,7 +149,9 @@ def configure_mineru_import() -> Path | None:
     if module_available("mineru"):
         return None
 
-    if (LOCAL_MINERU_DIR / "mineru" / "__init__.py").is_file():
+    if LOCAL_MINERU_DIR is not None and (
+        LOCAL_MINERU_DIR / "mineru" / "__init__.py"
+    ).is_file():
         source_text = str(LOCAL_MINERU_DIR)
         if source_text not in sys.path:
             sys.path.insert(0, source_text)

@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from hammer_translator.translation.jsonio import write_json_atomic
 from hammer_translator.translation.output_schema import TranslationArtifactOutput
+from hammer_translator.runtime_paths import child_process_cwd, runtime_paths
 
 from .executor import (
     CancellationCheck,
@@ -25,10 +26,9 @@ from .process import CancellableProcessRunner
 from .schema import PipelineStage, ProducedArtifact, StageExecutionResult, WarningRecord
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TRANSLATION_SCRIPT = PROJECT_ROOT / "translate_pdfs.py"
-TRANSLATION_CONFIG = PROJECT_ROOT / "translation_config.yaml"
-TRANSLATION_ENV_FILE = PROJECT_ROOT / ".env"
+TRANSLATION_MODULE = "hammer_translator.translation"
+TRANSLATION_CONFIG = runtime_paths().config_path
+TRANSLATION_ENV_FILE = runtime_paths().env_file
 TRANSLATION_STAGE_MANIFEST_VERSION = "pipeline-translation-v1"
 UNIT_PROGRESS_RE = re.compile(r"\]\s+(?:layout\s+)?(\d+)/(\d+)\s+")
 
@@ -43,7 +43,8 @@ class TranslationStageExecutor:
         *,
         simulate: bool = False,
         python_executable: str | Path | None = None,
-        translation_script: str | Path = TRANSLATION_SCRIPT,
+        translation_module: str = TRANSLATION_MODULE,
+        translation_script: str | Path | None = None,
         config_path: str | Path = TRANSLATION_CONFIG,
         env_file: str | Path = TRANSLATION_ENV_FILE,
         poll_interval: float = 0.25,
@@ -52,7 +53,12 @@ class TranslationStageExecutor:
     ):
         self.simulate = simulate
         self.python_executable = str(python_executable or sys.executable)
-        self.translation_script = Path(translation_script).expanduser().resolve()
+        self.translation_module = translation_module
+        self.translation_script = (
+            Path(translation_script).expanduser().resolve()
+            if translation_script is not None
+            else None
+        )
         self.config_path = Path(config_path).expanduser().resolve()
         self.env_file = Path(env_file).expanduser().resolve()
         self.process_runner = CancellableProcessRunner(
@@ -95,10 +101,15 @@ class TranslationStageExecutor:
 
     def build_command(self, context: StageContext, source_json: Path) -> list[str]:
         config = context.config
+        entrypoint = (
+            [str(self.translation_script)]
+            if self.translation_script is not None
+            else ["-m", self.translation_module]
+        )
         command = [
             self.python_executable,
             "-u",
-            str(self.translation_script),
+            *entrypoint,
             str(source_json),
             "--config",
             str(self.config_path),
@@ -136,10 +147,12 @@ class TranslationStageExecutor:
         progress: ProgressCallback,
         is_cancel_requested: CancellationCheck,
     ) -> None:
-        for path, code in (
-            (self.translation_script, "translation_entrypoint_missing"),
-            (self.config_path, "translation_config_missing"),
-        ):
+        dependencies = [(self.config_path, "translation_config_missing")]
+        if self.translation_script is not None:
+            dependencies.insert(
+                0, (self.translation_script, "translation_entrypoint_missing")
+            )
+        for path, code in dependencies:
             if not path.is_file():
                 raise StageExecutionError(
                     f"translation dependency was not found: {path}",
@@ -160,7 +173,7 @@ class TranslationStageExecutor:
 
         result = self.process_runner.run(
             self.build_command(context, source_json),
-            cwd=PROJECT_ROOT,
+            cwd=child_process_cwd(context.job_dir),
             log_path=context.job_dir / "logs" / "translating.log",
             executor_name=self.name,
             heartbeat_message="Translation is still running",

@@ -1,0 +1,10 @@
+{
+  "name": "hammer-translator-formula-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Pinned local MathJax runtime for HammerTranslator formula SVG assets",
+  "type": "module",
+  "dependencies": {
+    "mathjax": "4.1.3"
+  }
+}

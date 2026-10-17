@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from hammer_translator.parsing import default_environment_profile
+from hammer_translator.runtime_paths import runtime_paths
 
 from .executor import FakePipelineExecutor
 from .local_executor import LocalPipelineExecutor
@@ -21,8 +22,7 @@ from .translation_executor import TranslationStageExecutor
 from .validation_executor import PDFValidationStageExecutor
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_JOBS_ROOT = PROJECT_ROOT / "var" / "jobs"
+DEFAULT_JOBS_ROOT = runtime_paths().jobs_root
 
 
 def build_parser() -> argparse.ArgumentParser:

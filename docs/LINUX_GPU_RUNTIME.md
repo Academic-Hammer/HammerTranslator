@@ -23,6 +23,7 @@ From the repository root in a fresh environment:
 
 ```bash
 python -m pip install -r requirements/linux-gpu.txt
+python -m pip install .
 npm --prefix formula_runtime ci --ignore-scripts --no-audit --no-fund
 ```
 
@@ -31,6 +32,15 @@ Install the licensed fonts according to `assets/fonts/README.md`, or set
 verified font files.
 
 ## Preflight
+
+Run the complete application preflight first:
+
+```bash
+hammer-doctor --profile linux_gpu --backend pipeline \
+  --provider deepseek --require-provider-key
+```
+
+The narrower parser-only checks below remain useful when diagnosing MinerU.
 
 ```bash
 python -m hammer_translator.parsing --check --device cuda
@@ -62,7 +72,7 @@ python -m hammer_translator.parsing input_pdf/2512.00064.pdf \
 ## Pipeline smoke test
 
 ```bash
-python run_pipeline.py \
+hammer-translator \
   --jobs-root var/jobs \
   parse input_pdf/2512.00064.pdf \
   --run \

@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from hammer_translator.runtime_paths import runtime_paths
+
 from .artifact import write_translation_artifact
 from .cache import TranslationCache
 from .checkpoint import CheckpointError
@@ -28,9 +30,8 @@ from .style import build_golden_style_profile
 from .units import TranslationPlan, build_translation_plan
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CONFIG = PROJECT_ROOT / "translation_config.yaml"
-DEFAULT_ENV_FILE = PROJECT_ROOT / ".env"
+DEFAULT_CONFIG = runtime_paths().config_path
+DEFAULT_ENV_FILE = runtime_paths().env_file
 SUPPORTED_LANGUAGE_PAIR = ("en", "zh-CN")
 
 

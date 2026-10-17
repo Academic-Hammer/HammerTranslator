@@ -89,7 +89,8 @@ class ReflowStageExecutorTests(unittest.TestCase):
                 root / "output" / "reflow_feedback.json",
             )
 
-            self.assertEqual(command[3], str(translation))
+            self.assertEqual(command[2:4], ["-m", "hammer_translator.reflow"])
+            self.assertEqual(command[4], str(translation))
             self.assertIn("--allow-partial", command)
 
     def test_missing_registered_input_is_rejected_without_directory_guessing(self):

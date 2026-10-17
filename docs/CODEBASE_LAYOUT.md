@@ -73,7 +73,7 @@ All local data and runtime paths are excluded from version control.
 ## Step 5 dependency boundaries
 
 - `pyproject.toml` owns the V1 application package, six direct Python
-  dependencies, and five supported console entry points.
+  dependencies, and six supported console entry points.
 - `requirements/core.txt` is platform-neutral; `macos.txt` and
   `linux-gpu.txt` add exactly one MinerU parser stack.
 - The pre-cleanup Linux/CUDA environment freeze remains under
@@ -97,3 +97,18 @@ All local data and runtime paths are excluded from version control.
   CPU.
 - Server installation and smoke-test instructions are in
   `docs/LINUX_GPU_RUNTIME.md`.
+
+## Step 7 runtime boundary
+
+- `hammer_translator.runtime_paths` is the single owner of jobs, config,
+  environment file, fonts, MathJax, model-cache, temp, input, and output paths.
+- Parsing, Translation, and Reflow child processes use package module entry
+  points. The root scripts are compatibility shims and are no longer pipeline
+  dependencies.
+- Safe default configuration and resource manifests are packaged under
+  `hammer_translator/resources/`; licensed fonts and restored npm dependencies
+  remain operator-owned.
+- `hammer-doctor --profile local_mac|linux_gpu` validates the complete runtime
+  without printing credential values.
+- Environment variables and installed/source defaults are documented in
+  `docs/RUNTIME_CONFIGURATION.md`.

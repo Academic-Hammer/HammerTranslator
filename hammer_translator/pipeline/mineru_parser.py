@@ -9,6 +9,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from hammer_translator.runtime_paths import child_process_cwd
+
 from .executor import (
     CancellationCheck,
     ProgressCallback,
@@ -19,7 +21,6 @@ from .process import CancellableProcessRunner
 from .schema import PipelineStage, ProducedArtifact, StageExecutionResult, WarningRecord
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PARSER_MODULE = "hammer_translator.parsing"
 PARSE_MANIFEST_SCHEMA_VERSION = "mineru-parse-v1"
 
@@ -127,7 +128,7 @@ class MinerUParsingExecutor:
     ) -> None:
         result = self.process_runner.run(
             self.build_command(context, document_name),
-            cwd=PROJECT_ROOT,
+            cwd=child_process_cwd(context.job_dir),
             log_path=context.job_dir / "logs" / "parsing.log",
             executor_name=self.name,
             heartbeat_message="MinerU parsing is still running",

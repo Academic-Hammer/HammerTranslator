@@ -22,10 +22,19 @@ hammer-parse = "hammer_translator.parsing.cli:main"
 hammer-translate = "hammer_translator.translation.cli:main"
 hammer-reflow = "hammer_translator.reflow.cli:main"
 hammer-mineru-adapt = "mineru_adapter.cli:main"
+hammer-doctor = "hammer_translator.doctor:main"
 
 [tool.setuptools.packages.find]
 include = ["hammer_translator*", "mineru_adapter*"]
 namespaces = false
+
+[tool.setuptools.package-data]
+hammer_translator = [
+  "resources/*.yaml",
+  "resources/fonts/*.json",
+  "resources/formula_runtime/*.json",
+  "resources/formula_runtime/*.mjs",
+]
 
 [tool.ruff]
 target-version = "py311"

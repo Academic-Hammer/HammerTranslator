@@ -202,6 +202,8 @@ class TranslationStageExecutorTests(unittest.TestCase):
                 context, source
             )
 
+            self.assertEqual(command[2:4], ["-m", "hammer_translator.translation"])
+            self.assertEqual(command[4], str(source))
             self.assertEqual(command[command.index("--pdf") + 1], str(context.source_pdf))
             self.assertEqual(command[command.index("--provider") + 1], "deepseek")
             self.assertEqual(
