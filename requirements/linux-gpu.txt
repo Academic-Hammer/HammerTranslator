@@ -1,0 +1,10 @@
+# Initial Linux/NVIDIA deployment stack. CUDA drivers remain a host concern.
+# These parser versions are selected from the preserved, previously used Linux
+# snapshot while satisfying MinerU 3.4.4's Transformers constraint.
+-r core.txt
+mineru[pipeline,vllm]==3.4.4
+torch==2.8.0
+torchvision==0.23.0
+transformers==4.57.3
+onnxruntime==1.23.2
+vllm==0.11.0

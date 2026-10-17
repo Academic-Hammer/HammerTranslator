@@ -1,0 +1,4 @@
+# Platform-neutral developer tools. Install a parser overlay separately when
+# exercising real parsing.
+-r core.txt
+ruff==0.14.14

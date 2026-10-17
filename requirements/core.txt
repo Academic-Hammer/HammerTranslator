@@ -1,0 +1,3 @@
+# HammerTranslator application layer. Parser frameworks belong in a platform
+# overlay rather than here.
+-e .

@@ -26,7 +26,7 @@ hidden by that sandbox; normal Terminal execution is unaffected.
 Install the Mac-specific dependencies in the existing environment:
 
 ```bash
-conda run -n hammertrans python -m pip install -r requirements-macos.txt
+conda run -n hammertrans python -m pip install -r requirements/macos.txt
 ```
 
 Inspect hardware, MPS/MLX, and dependencies without parsing:

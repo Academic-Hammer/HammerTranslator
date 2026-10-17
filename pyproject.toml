@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hammer-translator"
+version = "1.0.0"
+description = "Local PDF parsing, translation, fixed-layout reflow, and validation pipeline"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "PyMuPDF==1.26.6",
+  "pydantic==2.14.0",
+  "PyYAML==6.0.3",
+  "python-dotenv==1.2.4",
+  "openai==2.54.0",
+  "httpx[socks]==0.28.1",
+]
+
+[project.scripts]
+hammer-translator = "hammer_translator.pipeline.cli:main"
+hammer-parse = "hammer_translator.parsing.cli:main"
+hammer-translate = "hammer_translator.translation.cli:main"
+hammer-reflow = "hammer_translator.reflow.cli:main"
+hammer-mineru-adapt = "mineru_adapter.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["hammer_translator*", "mineru_adapter*"]
+namespaces = false
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

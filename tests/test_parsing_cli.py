@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import batch_parse_pdfs_mac as compatibility_shim
 from hammer_translator.parsing import (
     RuntimeConfig,
+    build_parser,
     collect_pdfs,
     config_from_args,
+    configure_mineru_import,
     expected_parse_dir,
-    build_parser,
     normalize_document_name,
 )
 
@@ -79,6 +82,24 @@ class MacBatchParserTest(unittest.TestCase):
         self.assertEqual(normalize_document_name("A paper (final).pdf"), "A_paper_final")
         with self.assertRaisesRegex(ValueError, "plain filename"):
             normalize_document_name("../paper.pdf")
+
+    def test_installed_mineru_does_not_require_repository_source(self) -> None:
+        with patch.dict(os.environ, {}, clear=False), patch(
+            "hammer_translator.parsing.cli.module_available", return_value=True
+        ):
+            os.environ.pop("HAMMERTRANSLATOR_MINERU_SOURCE", None)
+            self.assertIsNone(configure_mineru_import())
+
+    def test_explicit_mineru_source_override_is_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            with patch.dict(
+                os.environ,
+                {"HAMMERTRANSLATOR_MINERU_SOURCE": str(source)},
+                clear=False,
+            ):
+                with self.assertRaisesRegex(FileNotFoundError, "does not point"):
+                    configure_mineru_import()
 
 
 if __name__ == "__main__":

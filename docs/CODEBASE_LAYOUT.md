@@ -9,15 +9,17 @@
 - `mineru_adapter/`: MinerU output normalization boundary.
 - `tests/`: executable unit, contract, and pipeline tests.
 - `schemas/`: versioned JSON contracts.
+- `requirements/`: platform-separated Python dependency definitions.
 - `formula_runtime/`: MathJax adapter and npm lock files; dependencies are
-  installed locally.
+  restored independently with `npm ci`.
 - `run_pipeline.py`, `translate_pdfs.py`, `render_translated_pdf.py`: supported
   CLI shims.
 - `batch_parse_pdfs_mac.py`: compatibility shim for older direct-parser commands.
 
 ## External and ignored
 
-- `external/MinerU/`: MinerU 3.4.4 local source tree.
+- `external/MinerU/`: optional MinerU 3.4.4 development source override; normal
+  runtime imports the pinned installed distribution.
 - `external/Colayout-pure/`: historical reference project; no active code
   dependency remains.
 
@@ -67,3 +69,16 @@ All local data and runtime paths are excluded from version control.
   Layout and Reflow can therefore resolve the same verified font after a job or
   checkout moves to another machine.
 - No active module reads `external/Colayout-pure`.
+
+## Step 5 dependency boundaries
+
+- `pyproject.toml` owns the V1 application package, six direct Python
+  dependencies, and five supported console entry points.
+- `requirements/core.txt` is platform-neutral; `macos.txt` and
+  `linux-gpu.txt` add exactly one MinerU parser stack.
+- The pre-cleanup Linux/CUDA environment freeze remains under
+  `legacy/requirements/` for provenance, but is not used for installation.
+- A deployment no longer needs `external/MinerU`; an explicit
+  `HAMMERTRANSLATOR_MINERU_SOURCE` override remains available for development.
+- Formula rendering uses the existing exact `package-lock.json` through
+  `npm ci`, independently of Python dependency resolution.

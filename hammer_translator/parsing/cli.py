@@ -1,9 +1,11 @@
 """MinerU parsing CLI tuned for Apple Silicon Macs.
 
-The script uses MinerU's local source tree, processes one document at a time to
-bound unified-memory use, selects MPS for pipeline models, and lets MinerU select
-MLX for VLM/hybrid models.  It also runs ``MinerUAdapter`` after parsing so the
-standard content-list output uses PDF-point coordinates required downstream.
+The script uses the installed, pinned MinerU distribution, processes one
+document at a time to bound unified-memory use, selects MPS for pipeline models,
+and lets MinerU select MLX for VLM/hybrid models. It also runs ``MinerUAdapter``
+after parsing so the standard content-list output uses PDF-point coordinates
+required downstream. An explicit local MinerU source checkout can override the
+installed distribution for development.
 """
 
 from __future__ import annotations
@@ -26,7 +28,8 @@ from uuid import uuid4
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_MINERU_DIR = PROJECT_ROOT / "external" / "MinerU"
-DEFAULT_INPUT_DIR = LOCAL_MINERU_DIR / "demo" / "pdfs"
+MINERU_SOURCE_ENV = "HAMMERTRANSLATOR_MINERU_SOURCE"
+DEFAULT_INPUT_DIR = PROJECT_ROOT / "input_pdf"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "demo-output-mac"
 
 LOGGER = logging.getLogger("mac-pdf-parser")
@@ -101,19 +104,51 @@ def read_mac_hardware() -> dict[str, Any]:
     return profile
 
 
-def ensure_local_mineru_path() -> None:
-    if not (LOCAL_MINERU_DIR / "mineru" / "__init__.py").is_file():
-        raise FileNotFoundError(f"Local MinerU source was not found at {LOCAL_MINERU_DIR}")
-    path = str(LOCAL_MINERU_DIR)
-    if path not in sys.path:
-        sys.path.insert(0, path)
-
-
 def module_available(name: str) -> bool:
     try:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ModuleNotFoundError, ValueError):
         return False
+
+
+def configure_mineru_import() -> Path | None:
+    """Select an explicit source override or the installed MinerU package.
+
+    A repository checkout is no longer a production dependency. The historical
+    ``external/MinerU`` location is used only as a development fallback when no
+    installed distribution can be discovered.
+    """
+
+    configured = os.environ.get(MINERU_SOURCE_ENV, "").strip()
+    if configured:
+        source = Path(configured).expanduser().resolve()
+        if not (source / "mineru" / "__init__.py").is_file():
+            raise FileNotFoundError(
+                f"{MINERU_SOURCE_ENV} does not point to a MinerU source checkout: {source}"
+            )
+        source_text = str(source)
+        if source_text not in sys.path:
+            sys.path.insert(0, source_text)
+        return source
+
+    if module_available("mineru"):
+        return None
+
+    if (LOCAL_MINERU_DIR / "mineru" / "__init__.py").is_file():
+        source_text = str(LOCAL_MINERU_DIR)
+        if source_text not in sys.path:
+            sys.path.insert(0, source_text)
+        return LOCAL_MINERU_DIR
+
+    raise ModuleNotFoundError(
+        "MinerU is not installed. Install the macOS or Linux GPU requirements overlay."
+    )
+
+
+def ensure_local_mineru_path() -> None:
+    """Compatibility wrapper for callers of the former source-only helper."""
+
+    configure_mineru_import()
 
 
 def inspect_accelerators() -> dict[str, Any]:
@@ -134,10 +169,10 @@ def inspect_accelerators() -> dict[str, Any]:
 
 
 def preflight(config: RuntimeConfig) -> tuple[bool, list[str]]:
-    ensure_local_mineru_path()
+    configure_mineru_import()
     required = {
         "loguru": "MinerU logging",
-        "mineru": "local MinerU package",
+        "mineru": "MinerU package",
         "torch": "pipeline/MPS runtime",
     }
     if config.backend in {"pipeline", "hybrid-engine"}:
@@ -293,7 +328,7 @@ def parse_one(
     *,
     document_name: str | None = None,
 ) -> Path:
-    ensure_local_mineru_path()
+    configure_mineru_import()
     from mineru.cli.common import do_parse
 
     output_name = normalize_document_name(document_name) if document_name else pdf_path.stem
