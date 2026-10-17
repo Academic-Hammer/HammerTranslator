@@ -32,7 +32,7 @@ conda run -n hammertrans python -m pip install -r requirements-macos.txt
 Inspect hardware, MPS/MLX, and dependencies without parsing:
 
 ```bash
-conda run -n hammertrans python batch_parse_pdfs_mac.py --check
+conda run -n hammertrans python -m hammer_translator.parsing --check
 ```
 
 ## Parse
@@ -40,14 +40,17 @@ conda run -n hammertrans python batch_parse_pdfs_mac.py --check
 Stable pipeline/MPS mode:
 
 ```bash
-conda run -n hammertrans python batch_parse_pdfs_mac.py INPUT --output OUTPUT
+conda run -n hammertrans python -m hammer_translator.parsing INPUT --output OUTPUT
 ```
 
 MLX VLM mode:
 
 ```bash
-conda run -n hammertrans python batch_parse_pdfs_mac.py INPUT --output OUTPUT --backend vlm-engine
+conda run -n hammertrans python -m hammer_translator.parsing INPUT --output OUTPUT --backend vlm-engine
 ```
+
+`batch_parse_pdfs_mac.py` remains available as a compatibility shim for older
+commands, but the packaged module above is the canonical direct entry point.
 
 The script preserves the MinerU-native content list as
 `*_mineru_content_list.json`, then writes the adapter result to the standard

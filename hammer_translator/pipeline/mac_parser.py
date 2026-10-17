@@ -20,7 +20,7 @@ from .schema import PipelineStage, ProducedArtifact, StageExecutionResult, Warni
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MAC_PARSER_SCRIPT = PROJECT_ROOT / "batch_parse_pdfs_mac.py"
+PARSER_MODULE = "hammer_translator.parsing"
 PARSE_MANIFEST_SCHEMA_VERSION = "mineru-parse-v1"
 
 
@@ -47,7 +47,7 @@ def parse_mode(backend: str, method: str) -> str:
 
 
 class MacMinerUParsingExecutor:
-    """Run the existing Mac MinerU entry point in a cancellable child process."""
+    """Run the packaged Mac MinerU entry point in a cancellable child process."""
 
     name = "mac-mineru-parser"
 
@@ -55,13 +55,13 @@ class MacMinerUParsingExecutor:
         self,
         *,
         python_executable: str | Path | None = None,
-        parser_script: str | Path = MAC_PARSER_SCRIPT,
+        parser_module: str = PARSER_MODULE,
         poll_interval: float = 0.25,
         heartbeat_interval: float = 5.0,
         progress_sink: Callable[[str], None] | None = None,
     ):
         self.python_executable = str(python_executable or sys.executable)
-        self.parser_script = Path(parser_script).expanduser().resolve()
+        self.parser_module = parser_module
         self.process_runner = CancellableProcessRunner(
             poll_interval=poll_interval,
             heartbeat_interval=heartbeat_interval,
@@ -77,7 +77,8 @@ class MacMinerUParsingExecutor:
         command = [
             self.python_executable,
             "-u",
-            str(self.parser_script),
+            "-m",
+            self.parser_module,
             str(context.source_pdf),
             "--output",
             str(context.job_dir / "parse"),
@@ -121,11 +122,6 @@ class MacMinerUParsingExecutor:
         progress: ProgressCallback,
         is_cancel_requested: CancellationCheck,
     ) -> None:
-        if not self.parser_script.is_file():
-            raise StageExecutionError(
-                f"Mac parser entry point was not found: {self.parser_script}",
-                code="parser_entrypoint_missing",
-            )
         result = self.process_runner.run(
             self.build_command(context, document_name),
             cwd=PROJECT_ROOT,

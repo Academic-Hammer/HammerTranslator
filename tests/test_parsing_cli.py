@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from batch_parse_pdfs_mac import (
+import batch_parse_pdfs_mac as compatibility_shim
+from hammer_translator.parsing import (
     RuntimeConfig,
     collect_pdfs,
     config_from_args,
@@ -35,6 +36,10 @@ def config(backend: str = "pipeline") -> RuntimeConfig:
 
 
 class MacBatchParserTest(unittest.TestCase):
+    def test_root_script_remains_a_compatible_thin_shim(self) -> None:
+        self.assertIs(compatibility_shim.RuntimeConfig, RuntimeConfig)
+        self.assertIs(compatibility_shim.collect_pdfs, collect_pdfs)
+
     def test_collect_pdfs_preserves_relative_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

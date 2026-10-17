@@ -19,6 +19,7 @@ from hammer_translator.pipeline.executor import (
 )
 from hammer_translator.pipeline.mac_parser import (
     MacMinerUParsingExecutor,
+    PARSER_MODULE,
     parse_mode,
     safe_document_stem,
 )
@@ -116,6 +117,7 @@ class MacParserExecutorTests(unittest.TestCase):
             command = executor.build_command(context, document_name)
 
             self.assertEqual(document_name, "A_paper_final")
+            self.assertEqual(command[2:4], ["-m", PARSER_MODULE])
             self.assertIn("vlm-engine", command)
             self.assertIn("--no-formula", command)
             self.assertEqual(command[command.index("--end-page") + 1], "4")
