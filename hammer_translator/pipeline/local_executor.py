@@ -11,7 +11,7 @@ from .executor import (
     StageContext,
     StageExecutionError,
 )
-from .mac_parser import MacMinerUParsingExecutor
+from .mineru_parser import MinerUParsingExecutor
 from .reflow_executor import ReflowStageExecutor
 from .schema import PipelineStage, StageExecutionResult
 from .translation_executor import TranslationStageExecutor
@@ -34,7 +34,7 @@ class LocalPipelineExecutor:
     ):
         self.executors: dict[PipelineStage, PipelineExecutor] = {
             PipelineStage.PARSING: parsing_executor
-            or MacMinerUParsingExecutor(progress_sink=progress_sink),
+            or MinerUParsingExecutor(progress_sink=progress_sink),
             PipelineStage.TRANSLATING: translation_executor
             or TranslationStageExecutor(
                 simulate=False,

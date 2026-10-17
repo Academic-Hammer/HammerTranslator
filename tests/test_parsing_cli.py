@@ -13,8 +13,11 @@ from hammer_translator.parsing import (
     collect_pdfs,
     config_from_args,
     configure_mineru_import,
+    default_environment_profile,
     expected_parse_dir,
     normalize_document_name,
+    preflight,
+    select_pipeline_device,
 )
 
 
@@ -77,6 +80,51 @@ class MacBatchParserTest(unittest.TestCase):
         args = build_parser().parse_args(["--start-page", "3", "--end-page", "2"])
         with self.assertRaisesRegex(ValueError, "end-page"):
             config_from_args(args)
+
+    def test_cli_accepts_linux_cuda_device(self) -> None:
+        args = build_parser().parse_args(["--device", "cuda"])
+        self.assertEqual(config_from_args(args).device, "cuda")
+
+    def test_auto_device_is_platform_aware(self) -> None:
+        self.assertEqual(
+            select_pipeline_device(
+                "auto",
+                system="Darwin",
+                accelerators={"mps_available": True, "cuda_available": False},
+            ),
+            "mps",
+        )
+        self.assertEqual(
+            select_pipeline_device(
+                "auto",
+                system="Linux",
+                accelerators={"mps_available": False, "cuda_available": True},
+            ),
+            "cuda",
+        )
+        self.assertEqual(default_environment_profile("Linux"), "linux_gpu")
+
+    def test_linux_vlm_preflight_requires_vllm(self) -> None:
+        accelerators = {
+            "mps_available": False,
+            "cuda_available": True,
+            "cuda_device_count": 1,
+            "cuda_devices": ["Test GPU"],
+            "mlx_vlm_available": False,
+        }
+        with patch("hammer_translator.parsing.cli.configure_mineru_import"), patch(
+            "hammer_translator.parsing.cli.platform.system", return_value="Linux"
+        ), patch(
+            "hammer_translator.parsing.cli.inspect_accelerators",
+            return_value=accelerators,
+        ), patch(
+            "hammer_translator.parsing.cli.module_available",
+            side_effect=lambda name: name != "vllm",
+        ):
+            ready, messages = preflight(config("vlm-engine"))
+
+        self.assertFalse(ready)
+        self.assertIn("MISSING  vllm", "\n".join(messages))
 
     def test_explicit_document_name_is_safe_and_stable(self) -> None:
         self.assertEqual(normalize_document_name("A paper (final).pdf"), "A_paper_final")

@@ -82,3 +82,18 @@ All local data and runtime paths are excluded from version control.
   `HAMMERTRANSLATOR_MINERU_SOURCE` override remains available for development.
 - Formula rendering uses the existing exact `package-lock.json` through
   `npm ci`, independently of Python dependency resolution.
+
+## Step 6 platform-neutral runtime
+
+- `hammer_translator.pipeline.mineru_parser.MinerUParsingExecutor` is the
+  canonical parser subprocess boundary. The former `mac_parser` module and
+  `MacMinerUParsingExecutor` name remain import-compatible aliases.
+- The parser CLI supports `auto`, `mps`, `cuda`, and `cpu`. Automatic selection
+  prefers MPS on macOS and CUDA on Linux.
+- VLM preflight requires MLX on macOS and vLLM on Linux; Pipeline/Hybrid checks
+  retain their shared Transformer and ONNX requirements.
+- Pipeline jobs persist either `local_mac` or `linux_gpu`. A Linux GPU job maps
+  `auto` to required CUDA so production parsing cannot silently fall back to
+  CPU.
+- Server installation and smoke-test instructions are in
+  `docs/LINUX_GPU_RUNTIME.md`.

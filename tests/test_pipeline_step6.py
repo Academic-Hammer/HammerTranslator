@@ -81,6 +81,12 @@ class LocalPipelineExecutorTests(unittest.TestCase):
 
 
 class FullPipelineCliTests(unittest.TestCase):
+    def test_runtime_profile_rejects_the_other_platform_accelerator(self):
+        with self.assertRaisesRegex(ValueError, "CUDA"):
+            PipelineConfig(environment_profile="local_mac", parser_device="cuda")
+        with self.assertRaisesRegex(ValueError, "MPS"):
+            PipelineConfig(environment_profile="linux_gpu", parser_device="mps")
+
     def test_run_real_mode_uses_local_executor_and_persists_options(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -122,6 +128,36 @@ class FullPipelineCliTests(unittest.TestCase):
             self.assertFalse(payload["config"]["allow_partial_pdf"])
             self.assertIn(payload["job_id"], stderr.getvalue())
             local_executor.assert_called_once()
+
+    def test_linux_profile_and_cuda_are_persisted(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            stdout = io.StringIO()
+            fake = FakePipelineExecutor()
+            with patch(
+                "hammer_translator.pipeline.cli.LocalPipelineExecutor",
+                return_value=fake,
+            ), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
+                io.StringIO()
+            ):
+                code = main(
+                    [
+                        "--jobs-root",
+                        str(root / "jobs"),
+                        "run",
+                        str(_pdf(root / "sample.pdf")),
+                        "--run",
+                        "--environment-profile",
+                        "linux_gpu",
+                        "--parser-device",
+                        "cuda",
+                    ]
+                )
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(code, 0)
+            self.assertEqual(payload["config"]["environment_profile"], "linux_gpu")
+            self.assertEqual(payload["config"]["parser_device"], "cuda")
 
     def test_resume_real_job_skips_completed_stage(self):
         with tempfile.TemporaryDirectory() as temp_dir:

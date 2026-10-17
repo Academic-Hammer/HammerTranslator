@@ -1,11 +1,11 @@
-"""MinerU parsing CLI tuned for Apple Silicon Macs.
+"""MinerU parsing CLI for local Apple-Silicon and Linux GPU runtimes.
 
 The script uses the installed, pinned MinerU distribution, processes one
-document at a time to bound unified-memory use, selects MPS for pipeline models,
-and lets MinerU select MLX for VLM/hybrid models. It also runs ``MinerUAdapter``
-after parsing so the standard content-list output uses PDF-point coordinates
-required downstream. An explicit local MinerU source checkout can override the
-installed distribution for development.
+document at a time, and selects MPS or CUDA when available. MinerU selects MLX
+for VLM/hybrid models on macOS and vLLM on Linux. It also runs
+``MinerUAdapter`` after parsing so the standard content-list output uses
+PDF-point coordinates required downstream. An explicit local MinerU source
+checkout can override the installed distribution for development.
 """
 
 from __future__ import annotations
@@ -30,9 +30,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LOCAL_MINERU_DIR = PROJECT_ROOT / "external" / "MinerU"
 MINERU_SOURCE_ENV = "HAMMERTRANSLATOR_MINERU_SOURCE"
 DEFAULT_INPUT_DIR = PROJECT_ROOT / "input_pdf"
-DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "demo-output-mac"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "demo-output"
 
-LOGGER = logging.getLogger("mac-pdf-parser")
+LOGGER = logging.getLogger("pdf-parser")
 PARSE_MANIFEST_SCHEMA_VERSION = "mineru-parse-v1"
 
 
@@ -63,18 +63,23 @@ def collect_pdfs(source: Path) -> list[tuple[Path, Path]]:
         return [(source.resolve(), Path())]
     if not source.is_dir():
         raise FileNotFoundError(f"Input path does not exist: {source}")
-    files = [path for path in source.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"]
+    files = [
+        path
+        for path in source.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".pdf"
+    ]
     return [(path.resolve(), path.parent.relative_to(source)) for path in sorted(files)]
 
 
-def read_mac_hardware() -> dict[str, Any]:
+def read_hardware() -> dict[str, Any]:
     profile: dict[str, Any] = {
         "system": platform.system(),
         "machine": platform.machine(),
-        "macos": platform.mac_ver()[0],
+        "release": platform.release(),
     }
     if platform.system() != "Darwin":
         return profile
+    profile["macos"] = platform.mac_ver()[0]
     try:
         completed = subprocess.run(
             ["system_profiler", "-json", "SPHardwareDataType", "SPDisplaysDataType"],
@@ -97,11 +102,21 @@ def read_mac_hardware() -> dict[str, Any]:
                 "metal": displays.get("spdisplays_metal"),
             }
         )
-        if not profile.get("metal") and profile.get("gpu") and profile.get("machine") in {"arm64", "aarch64"}:
+        if (
+            not profile.get("metal")
+            and profile.get("gpu")
+            and profile.get("machine") in {"arm64", "aarch64"}
+        ):
             profile["metal"] = "supported (Apple Silicon)"
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError, IndexError):
         profile["profile_warning"] = "system_profiler was unavailable"
     return profile
+
+
+def read_mac_hardware() -> dict[str, Any]:
+    """Compatibility alias for the former macOS-only hardware reader."""
+
+    return read_hardware()
 
 
 def module_available(name: str) -> bool:
@@ -153,6 +168,8 @@ def ensure_local_mineru_path() -> None:
 
 def inspect_accelerators() -> dict[str, Any]:
     result: dict[str, Any] = {
+        "cuda_available": False,
+        "cuda_device_count": 0,
         "mps_built": False,
         "mps_available": False,
         "mlx_available": module_available("mlx"),
@@ -165,15 +182,57 @@ def inspect_accelerators() -> dict[str, Any]:
         mps = getattr(torch.backends, "mps", None)
         result["mps_built"] = bool(mps and mps.is_built())
         result["mps_available"] = bool(mps and mps.is_available())
+        cuda = getattr(torch, "cuda", None)
+        result["cuda_runtime"] = getattr(getattr(torch, "version", None), "cuda", None)
+        result["cuda_available"] = bool(cuda and cuda.is_available())
+        if result["cuda_available"]:
+            result["cuda_device_count"] = int(cuda.device_count())
+            result["cuda_devices"] = [
+                cuda.get_device_name(index)
+                for index in range(result["cuda_device_count"])
+            ]
     return result
 
 
+def select_pipeline_device(
+    requested: str,
+    *,
+    accelerators: dict[str, Any] | None = None,
+    system: str | None = None,
+) -> str:
+    """Resolve an explicit device or choose the native accelerator safely."""
+
+    if requested != "auto":
+        return requested
+    available = accelerators if accelerators is not None else inspect_accelerators()
+    host_system = system or platform.system()
+    if host_system == "Darwin" and available.get("mps_available"):
+        return "mps"
+    if available.get("cuda_available"):
+        return "cuda"
+    if available.get("mps_available"):
+        return "mps"
+    return "cpu"
+
+
+def default_environment_profile(system: str | None = None) -> str:
+    """Return the persisted runtime profile for the current supported host."""
+
+    return "linux_gpu" if (system or platform.system()) == "Linux" else "local_mac"
+
+
 def preflight(config: RuntimeConfig) -> tuple[bool, list[str]]:
-    configure_mineru_import()
+    messages: list[str] = []
+    ok = True
+    try:
+        configure_mineru_import()
+    except (FileNotFoundError, ModuleNotFoundError) as exc:
+        messages.append(f"ERROR  {exc}")
+        ok = False
     required = {
         "loguru": "MinerU logging",
         "mineru": "MinerU package",
-        "torch": "pipeline/MPS runtime",
+        "torch": "pipeline accelerator runtime",
     }
     if config.backend in {"pipeline", "hybrid-engine"}:
         required.update(
@@ -185,12 +244,15 @@ def preflight(config: RuntimeConfig) -> tuple[bool, list[str]]:
             }
         )
     if config.backend in {"vlm-engine", "hybrid-engine"}:
-        required.update({"mlx": "Apple GPU runtime", "mlx_vlm": "MinerU VLM on MLX"})
+        if platform.system() == "Darwin":
+            required.update(
+                {"mlx": "Apple GPU runtime", "mlx_vlm": "MinerU VLM on MLX"}
+            )
+        elif platform.system() == "Linux":
+            required["vllm"] = "MinerU VLM on Linux GPU"
     if config.adapt:
         required["fitz"] = "PDF style extraction"
 
-    messages: list[str] = []
-    ok = True
     for module, purpose in required.items():
         available = module_available(module)
         messages.append(f"{'OK' if available else 'MISSING'}  {module:<14} {purpose}")
@@ -200,18 +262,30 @@ def preflight(config: RuntimeConfig) -> tuple[bool, list[str]]:
     if config.device == "mps" and not accelerators["mps_available"]:
         messages.append("ERROR  MPS was requested but is not available to PyTorch")
         ok = False
+    elif config.device == "cuda" and not accelerators["cuda_available"]:
+        messages.append("ERROR  CUDA was requested but is not available to PyTorch")
+        ok = False
     elif config.device == "auto" and module_available("torch"):
-        selected = "mps" if accelerators["mps_available"] else "cpu"
+        selected = select_pipeline_device("auto", accelerators=accelerators)
         messages.append(f"INFO   automatic pipeline device: {selected}")
     if config.backend in {"vlm-engine", "hybrid-engine"}:
-        engine = "mlx" if accelerators["mlx_vlm_available"] else "transformers fallback"
+        if platform.system() == "Darwin":
+            engine = "mlx" if accelerators["mlx_vlm_available"] else "unavailable"
+        elif platform.system() == "Linux":
+            engine = "vllm" if module_available("vllm") else "unavailable"
+        else:
+            engine = "transformers fallback"
         messages.append(f"INFO   automatic VLM engine: {engine}")
+    if accelerators["cuda_available"]:
+        devices = ", ".join(accelerators.get("cuda_devices", []))
+        messages.append(f"INFO   CUDA devices: {devices or accelerators['cuda_device_count']}")
     return ok, messages
 
 
 def configure_environment(config: RuntimeConfig) -> str:
-    """Set conservative Apple-Silicon defaults before MinerU is imported."""
-    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+    """Set conservative cross-platform defaults before MinerU is imported."""
+    if platform.system() == "Darwin":
+        os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["MINERU_PDF_RENDER_THREADS"] = str(config.render_threads)
     os.environ["MINERU_PROCESSING_WINDOW_SIZE"] = str(config.window_size)
@@ -219,10 +293,7 @@ def configure_environment(config: RuntimeConfig) -> str:
     os.environ["MINERU_INTER_OP_NUM_THREADS"] = "2"
     os.environ["MINERU_FORMULA_CH_SUPPORT"] = str(config.formula_ch).lower()
 
-    device = config.device
-    if device == "auto":
-        accelerators = inspect_accelerators()
-        device = "mps" if accelerators["mps_available"] else "cpu"
+    device = select_pipeline_device(config.device)
     os.environ["MINERU_DEVICE_MODE"] = device
     return device
 
@@ -369,9 +440,20 @@ def parse_one(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Batch PDF parsing for Apple Silicon Macs")
-    parser.add_argument("input", nargs="?", type=Path, default=DEFAULT_INPUT_DIR, help="PDF file or directory")
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR, help="output root directory")
+    parser = argparse.ArgumentParser(description="Batch PDF parsing for macOS and Linux GPU hosts")
+    parser.add_argument(
+        "input",
+        nargs="?",
+        type=Path,
+        default=DEFAULT_INPUT_DIR,
+        help="PDF file or directory",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
+        help="output root directory",
+    )
     parser.add_argument(
         "--document-name",
         help="output filename stem for a single input PDF (used by the unified pipeline)",
@@ -380,9 +462,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=["pipeline", "vlm-engine", "hybrid-engine"],
         default="pipeline",
-        help="pipeline uses MPS; VLM/hybrid use MLX when installed",
+        help="uses MPS/MLX on macOS and CUDA/vLLM on Linux",
     )
-    parser.add_argument("--device", choices=["auto", "mps", "cpu"], default="auto")
+    parser.add_argument("--device", choices=["auto", "mps", "cuda", "cpu"], default="auto")
     parser.add_argument("--method", choices=["auto", "txt", "ocr"], default="auto")
     parser.add_argument("--lang", default="ch")
     parser.add_argument("--formula", action=argparse.BooleanOptionalAction, default=True)
@@ -398,8 +480,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--window-size", type=int, default=8)
     parser.add_argument("--skip-existing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--continue-on-error", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--check", action="store_true", help="inspect hardware and dependencies without parsing")
-    parser.add_argument("--dry-run", action="store_true", help="show planned work without loading MinerU")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="inspect hardware and dependencies without parsing",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="show planned work without loading MinerU",
+    )
     return parser
 
 
@@ -438,10 +528,10 @@ def main(argv: list[str] | None = None) -> int:
         LOGGER.error("Invalid configuration: %s", exc)
         return 2
 
-    hardware = read_mac_hardware()
+    hardware = read_hardware()
     LOGGER.info("Hardware: %s", json.dumps(hardware, ensure_ascii=False))
-    if hardware.get("system") != "Darwin" or hardware.get("machine") not in {"arm64", "aarch64"}:
-        LOGGER.error("This entry point is intended for Apple Silicon macOS")
+    if hardware.get("system") not in {"Darwin", "Linux"}:
+        LOGGER.error("This entry point supports macOS and Linux")
         return 2
 
     ready, checks = preflight(config)
@@ -450,7 +540,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         return 0 if ready else 2
     if not ready and not args.dry_run:
-        LOGGER.error("Dependencies are incomplete. Install requirements-macos.txt in hammertrans first.")
+        overlay = (
+            "requirements/macos.txt"
+            if hardware.get("system") == "Darwin"
+            else "requirements/linux-gpu.txt"
+        )
+        LOGGER.error("Dependencies are incomplete. Install %s first.", overlay)
         return 2
 
     try:

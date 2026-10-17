@@ -8,9 +8,11 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from hammer_translator.parsing import default_environment_profile
+
 from .executor import FakePipelineExecutor
 from .local_executor import LocalPipelineExecutor
-from .mac_parser import MacMinerUParsingExecutor
+from .mineru_parser import MinerUParsingExecutor
 from .reflow_executor import ReflowStageExecutor
 from .runner import PipelineRunner
 from .schema import JobStatus, PipelineConfig, PipelineStage, StageStatus
@@ -39,12 +41,19 @@ def build_parser() -> argparse.ArgumentParser:
     run_mode.add_argument("--run", action="store_true")
     run_mode.add_argument("--simulate", action="store_true")
     run.add_argument(
+        "--environment-profile",
+        choices=["local_mac", "linux_gpu"],
+        default=default_environment_profile(),
+    )
+    run.add_argument(
         "--parser-backend",
         choices=["pipeline", "vlm-engine", "hybrid-engine"],
         default="pipeline",
     )
     run.add_argument("--parser-method", choices=["auto", "txt", "ocr"], default="auto")
-    run.add_argument("--parser-device", choices=["auto", "mps", "cpu"], default="auto")
+    run.add_argument(
+        "--parser-device", choices=["auto", "mps", "cuda", "cpu"], default="auto"
+    )
     run.add_argument("--parser-lang", default="ch")
     run.add_argument(
         "--parser-formula", action=argparse.BooleanOptionalAction, default=True
@@ -78,17 +87,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     parse = commands.add_parser(
         "parse",
-        help="create a job and run only the real Mac MinerU parsing stage",
+        help="create a job and run only the real MinerU parsing stage",
     )
     parse.add_argument("pdf", type=Path)
     parse.add_argument("--run", action="store_true", required=True)
+    parse.add_argument(
+        "--environment-profile",
+        choices=["local_mac", "linux_gpu"],
+        default=default_environment_profile(),
+    )
     parse.add_argument(
         "--backend",
         choices=["pipeline", "vlm-engine", "hybrid-engine"],
         default="pipeline",
     )
     parse.add_argument("--method", choices=["auto", "txt", "ocr"], default="auto")
-    parse.add_argument("--device", choices=["auto", "mps", "cpu"], default="auto")
+    parse.add_argument("--device", choices=["auto", "mps", "cuda", "cpu"], default="auto")
     parse.add_argument("--lang", default="ch")
     parse.add_argument("--formula", action=argparse.BooleanOptionalAction, default=True)
     parse.add_argument("--table", action=argparse.BooleanOptionalAction, default=True)
@@ -163,6 +177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "run":
             config = PipelineConfig(
                 execution_mode="simulation" if args.simulate else "real",
+                environment_profile=args.environment_profile,
                 parser_backend=args.parser_backend,
                 parser_method=args.parser_method,
                 parser_device=args.parser_device,
@@ -209,6 +224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             } else 1
         if args.command == "parse":
             config = PipelineConfig(
+                environment_profile=args.environment_profile,
                 parser_backend=args.backend,
                 parser_method=args.method,
                 parser_device=args.device,
@@ -230,13 +246,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             job = store.create_job(args.pdf, config=config)
             print(
-                f"[{job.job_id}] queued real Mac parsing",
+                f"[{job.job_id}] queued real MinerU parsing ({args.environment_profile})",
                 file=sys.stderr,
                 flush=True,
             )
             real_runner = PipelineRunner(
                 store,
-                MacMinerUParsingExecutor(
+                MinerUParsingExecutor(
                     progress_sink=lambda message: print(
                         f"[{job.job_id}] {message}",
                         file=sys.stderr,

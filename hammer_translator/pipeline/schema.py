@@ -169,7 +169,7 @@ class PipelineConfig(StrictModel):
     target_language: str = "zh-CN"
     parser_backend: Literal["pipeline", "vlm-engine", "hybrid-engine"] = "pipeline"
     parser_method: Literal["auto", "txt", "ocr"] = "auto"
-    parser_device: Literal["auto", "mps", "cpu"] = "auto"
+    parser_device: Literal["auto", "mps", "cuda", "cpu"] = "auto"
     parser_language: str = "ch"
     parser_formula: bool = True
     parser_table: bool = True
@@ -191,6 +191,10 @@ class PipelineConfig(StrictModel):
     def validate_v1_languages(self) -> "PipelineConfig":
         if (self.source_language, self.target_language) != ("en", "zh-CN"):
             raise ValueError("V1 supports only English to Simplified Chinese")
+        if self.environment_profile == "local_mac" and self.parser_device == "cuda":
+            raise ValueError("local_mac does not support the CUDA parser device")
+        if self.environment_profile == "linux_gpu" and self.parser_device == "mps":
+            raise ValueError("linux_gpu does not support the MPS parser device")
         if (
             self.parser_end_page is not None
             and self.parser_end_page < self.parser_start_page

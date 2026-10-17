@@ -10,6 +10,7 @@ from .executor import (
 from .runner import PipelineRunner
 from .local_executor import LocalPipelineExecutor
 from .mac_parser import MacMinerUParsingExecutor
+from .mineru_parser import MinerUParsingExecutor
 from .reflow_executor import ReflowStageExecutor
 from .translation_executor import TranslationStageExecutor
 from .validation_executor import PDFValidationStageExecutor
@@ -37,6 +38,7 @@ __all__ = [
     "LocalJobStore",
     "LocalPipelineExecutor",
     "MacMinerUParsingExecutor",
+    "MinerUParsingExecutor",
     "PipelineConfig",
     "PipelineEvent",
     "PipelineExecutor",

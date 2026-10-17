@@ -1,8 +1,8 @@
 # macOS parsing
 
-This entry point is designed for the local Apple-Silicon machine. It does not
-set CUDA variables and never uses the Linux server path embedded in the older
-`legacy/scripts/batch_parse_pdfs.py`.
+This is the Apple-Silicon profile of the shared parser entry point. Automatic
+device selection uses MPS here; the same module selects CUDA on Linux. It never
+uses the server path embedded in the older `legacy/scripts/batch_parse_pdfs.py`.
 
 ## Hardware path
 

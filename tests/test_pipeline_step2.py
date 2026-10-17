@@ -17,8 +17,9 @@ from hammer_translator.pipeline.executor import (
     StageContext,
     StageExecutionError,
 )
-from hammer_translator.pipeline.mac_parser import (
-    MacMinerUParsingExecutor,
+from hammer_translator.pipeline.mac_parser import MacMinerUParsingExecutor
+from hammer_translator.pipeline.mineru_parser import (
+    MinerUParsingExecutor,
     PARSER_MODULE,
     parse_mode,
     safe_document_stem,
@@ -40,7 +41,7 @@ def _pdf(path: Path) -> Path:
     return path
 
 
-class FixtureMacParser(MacMinerUParsingExecutor):
+class FixtureMinerUParser(MinerUParsingExecutor):
     def _run_process(
         self,
         context,
@@ -112,7 +113,7 @@ class MacParserExecutorTests(unittest.TestCase):
                     parser_end_page=4,
                 ).model_dump(mode="json"),
             )
-            executor = MacMinerUParsingExecutor()
+            executor = MinerUParsingExecutor()
             document_name = safe_document_stem(context.document_name)
             command = executor.build_command(context, document_name)
 
@@ -125,8 +126,26 @@ class MacParserExecutorTests(unittest.TestCase):
                 command[command.index("--document-name") + 1], document_name
             )
 
+    def test_linux_profile_resolves_auto_device_to_cuda(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            context = StageContext(
+                job_id="00000000-0000-0000-0000-000000000001",
+                job_dir=root,
+                stage=PipelineStage.PARSING,
+                attempt=1,
+                source_pdf=_pdf(root / "source.pdf"),
+                document_name="paper.pdf",
+                config=PipelineConfig(
+                    environment_profile="linux_gpu",
+                    parser_device="auto",
+                ).model_dump(mode="json"),
+            )
+            command = MinerUParsingExecutor().build_command(context, "paper")
+            self.assertEqual(command[command.index("--device") + 1], "cuda")
+
     def test_parser_child_process_can_be_cancelled(self):
-        class SleepingParser(MacMinerUParsingExecutor):
+        class SleepingParser(MinerUParsingExecutor):
             def build_command(self, context, document_name):
                 return [
                     sys.executable,
@@ -199,7 +218,7 @@ class MacParserExecutorTests(unittest.TestCase):
                 _pdf(root / "Research Paper.pdf"),
                 config=PipelineConfig(parser_backend="pipeline", parser_method="auto"),
             )
-            executor = FixtureMacParser()
+            executor = FixtureMinerUParser()
             parsed = PipelineRunner(store, executor).run_stage(
                 job.job_id, PipelineStage.PARSING
             )
@@ -226,7 +245,7 @@ class MacParserExecutorTests(unittest.TestCase):
             self.assertEqual(executor.calls, 1)
 
     def test_manifest_mismatch_fails_stage_without_publishing_artifacts(self):
-        class BadManifestParser(FixtureMacParser):
+        class BadManifestParser(FixtureMinerUParser):
             def _run_process(self, context, document_name, **kwargs):
                 super()._run_process(context, document_name, **kwargs)
                 result_dir = (
@@ -261,8 +280,8 @@ class MacParserExecutorTests(unittest.TestCase):
             stdout = io.StringIO()
             stderr = io.StringIO()
             with patch(
-                "hammer_translator.pipeline.cli.MacMinerUParsingExecutor",
-                return_value=FixtureMacParser(),
+                "hammer_translator.pipeline.cli.MinerUParsingExecutor",
+                return_value=FixtureMinerUParser(),
             ):
                 with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(
                     stderr
@@ -286,6 +305,9 @@ class MacParserExecutorTests(unittest.TestCase):
             self.assertEqual(payload["status"], "queued")
             self.assertEqual(payload["stages"][0]["status"], "completed_with_warnings")
             self.assertEqual(payload["stages"][1]["status"], "pending")
+
+    def test_mac_executor_name_remains_a_compatibility_alias(self):
+        self.assertIs(MacMinerUParsingExecutor, MinerUParsingExecutor)
 
 
 if __name__ == "__main__":
