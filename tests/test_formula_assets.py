@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+import fitz
+
+from hammer_translator.translation.artifact import build_translation_artifact
+from hammer_translator.translation.cache import TranslationCache
+from hammer_translator.translation.formula_assets import (
+    MathJaxSvgRenderer,
+    build_formula_asset_contract,
+)
+from hammer_translator.translation.loader import DiscoveredInput, load_document
+from hammer_translator.translation.output_schema import FormulaAssetContractOutput
+from hammer_translator.translation.provider import FakeProvider
+from hammer_translator.translation.runner import RunnerConfig, execute_translation_plan
+from hammer_translator.translation.units import build_translation_plan
+
+
+def _plan(root: Path, *, with_formula_span: bool):
+    bbox = [20, 20, 220, 55]
+    spans = [{"type": "text", "content": "Value x^2", "bbox": [20, 20, 90, 40]}]
+    if with_formula_span:
+        spans = [
+            {"type": "text", "content": "Value", "bbox": [20, 20, 60, 40]},
+            {
+                "type": "inline_equation",
+                "content": "x^2",
+                "bbox": [64, 20, 90, 40],
+                "score": 0.95,
+            },
+        ]
+    source_json = root / "paper_enriched.json"
+    source_json.write_text(
+        json.dumps(
+            [
+                {
+                    "type": "text",
+                    "text": "Value $x^2$",
+                    "page_idx": 0,
+                    "bbox": bbox,
+                    "logical_para_id": 1,
+                    "lines": [{"bbox": bbox, "spans": spans}],
+                    "rich_spans": [
+                        {
+                            "text": "Value x^2",
+                            "size": 12,
+                            "font": "Helvetica",
+                            "flags": 0,
+                            "color": 0,
+                            "bbox": [20, 20, 90, 40],
+                        }
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    source_pdf = root / "paper_origin.pdf"
+    document = fitz.open()
+    page = document.new_page(width=250, height=180)
+    page.insert_text((20, 36), "Value", fontsize=12)
+    page.insert_text((64, 36), "x^2", fontsize=12)
+    document.save(source_pdf)
+    document.close()
+    loaded = load_document(DiscoveredInput(source_json.resolve(), "test"))
+    return build_translation_plan(loaded)
+
+
+class UnsafeSvgRenderer(MathJaxSvgRenderer):
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def version(self) -> str | None:
+        return "test"
+
+    def render_batch(self, expressions):
+        return (
+            {
+                expression.formula_id: (
+                    '<svg xmlns="http://www.w3.org/2000/svg" width="1ex" height="1ex" '
+                    'viewBox="0 0 1 1"><script>alert(1)</script></svg>'
+                )
+                for expression in expressions
+            },
+            {},
+        )
+
+
+class FormulaAssetTests(unittest.TestCase):
+    def test_source_pdf_formula_becomes_verified_vector_clip_reference(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plan = _plan(root, with_formula_span=True)
+            contract = build_formula_asset_contract(plan, root / "paper_translated.json")
+            validated = FormulaAssetContractOutput.model_validate(contract)
+            self.assertEqual(validated.stats.source_pdf_clip, 1)
+            self.assertEqual(validated.stats.mathjax_svg, 0)
+            asset = validated.assets[0]
+            self.assertEqual(asset.status, "ready")
+            self.assertEqual(asset.kind, "source_pdf_clip")
+            self.assertEqual(asset.storage, "source_pdf_reference")
+            self.assertIsNone(asset.relative_path)
+            self.assertGreater(asset.source_pdf_clip.text_span_count, 0)
+            self.assertEqual(asset.source_pdf_clip.raster_image_count, 0)
+            self.assertIn(asset.source_pdf_clip.text_match, {"exact", "refined"})
+            self.assertEqual(asset.metrics.coordinate_system, "pdf_points")
+            self.assertAlmostEqual(asset.metrics.width, 26.0)
+            self.assertAlmostEqual(asset.metrics.height, 20.0)
+
+    def test_missing_source_span_generates_self_contained_mathjax_svg(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plan = _plan(root, with_formula_span=False)
+            contract = build_formula_asset_contract(plan, root / "paper_translated.json")
+            validated = FormulaAssetContractOutput.model_validate(contract)
+            self.assertEqual(validated.stats.mathjax_svg, 1)
+            asset = validated.assets[0]
+            self.assertEqual(asset.kind, "mathjax_svg")
+            svg_path = root / asset.relative_path
+            self.assertTrue(svg_path.is_file())
+            svg = svg_path.read_text(encoding="utf-8")
+            self.assertIn("<svg", svg)
+            self.assertIn("<path", svg)
+            self.assertNotIn("<script", svg)
+            self.assertEqual(
+                hashlib.sha256(svg_path.read_bytes()).hexdigest(),
+                asset.sha256,
+            )
+            self.assertEqual(asset.metrics.coordinate_system, "mathjax_ex")
+            self.assertGreater(asset.metrics.baseline_from_top, 0)
+
+    def test_unsafe_mathjax_svg_is_rejected_as_failed_asset(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plan = _plan(root, with_formula_span=False)
+            contract = build_formula_asset_contract(
+                plan,
+                root / "paper_translated.json",
+                renderer=UnsafeSvgRenderer(),
+            )
+            asset = FormulaAssetContractOutput.model_validate(contract).assets[0]
+            self.assertEqual(asset.status, "failed")
+            self.assertEqual(asset.failure_code, "mathjax_svg_contains_script")
+            self.assertFalse((root / "paper_formula_assets" / f"{asset.formula_id}.svg").exists())
+
+    def test_translation_v3_links_inventory_to_resolved_asset(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plan = _plan(root, with_formula_span=True)
+            provider = FakeProvider()
+            config = RunnerConfig()
+            result = execute_translation_plan(
+                plan,
+                provider=provider,
+                cache=TranslationCache(root / "cache.sqlite3"),
+                checkpoint_path=root / "manifest.json",
+                config=config,
+            )
+            contract = build_formula_asset_contract(plan, root / "paper_translated.json")
+            artifact = build_translation_artifact(
+                plan,
+                provider=provider,
+                requested_provider="fake",
+                result=result,
+                config=config,
+                formula_asset_contract=contract,
+            )
+            self.assertEqual(artifact["schema_version"], "translation-v3")
+            formula = artifact["formula_contract"]["inventory"][0]
+            asset = artifact["formula_assets"]["assets"][0]
+            self.assertEqual(formula["asset_id"], asset["asset_id"])
+            self.assertEqual(formula["asset_status"], "ready")
+
+
+if __name__ == "__main__":
+    unittest.main()

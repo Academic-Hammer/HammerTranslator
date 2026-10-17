@@ -1,0 +1,49 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system metadata
+.vscode/
+.idea/
+.DS_Store
+
+# Python build, test, and runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# JavaScript dependencies are restored from package-lock.json
+node_modules/
+
+# Logs, caches, and temporary files
+*.log
+tmp/
+.cache/
+
+# Local pipeline jobs, uploaded PDFs, and generated output
+var/
+input_pdf/
+output/
+output-*/
+
+# Local evaluation datasets and archives
+270-new/
+pdfAssess.zip
+
+# Historical/reference projects retained locally during cleanup
+Colayout-pure/
+data-preprocess-v2/
+
+# Vendored third-party source used by the current Mac environment. The cleanup
+# baseline records its version; the deployment step will replace this local tree
+# with a pinned, reproducible dependency.
+MinerU/

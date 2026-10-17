@@ -1,0 +1,2 @@
+"""hammerTranslator application package."""
+

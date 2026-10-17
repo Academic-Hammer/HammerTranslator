@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "translation-input-v1",
+  "title": "Translation Stage input blocks",
+  "description": "MinerUAdapter block array accepted by the Translation Stage.",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "required": [
+      "type",
+      "text",
+      "page_idx",
+      "bbox",
+      "logical_para_id"
+    ],
+    "properties": {
+      "type": {
+        "type": "string",
+        "minLength": 1
+      },
+      "text": {
+        "type": "string"
+      },
+      "page_idx": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "bbox": {
+        "type": "array",
+        "prefixItems": [
+          {"type": "number"},
+          {"type": "number"},
+          {"type": "number"},
+          {"type": "number"}
+        ],
+        "minItems": 4,
+        "maxItems": 4
+      },
+      "logical_para_id": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "block_id": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+      }
+    },
+    "additionalProperties": true
+  }
+}
