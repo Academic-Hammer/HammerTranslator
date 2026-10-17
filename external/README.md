@@ -7,9 +7,9 @@ environment but maintained outside the HammerTranslator repository.
 
 - `MinerU/`: MinerU 3.4.4. The macOS environment installs it in editable mode
   with the `pipeline` and `mlx` extras.
-- `Colayout-pure/`: historical project retained temporarily because the V1
-  style system uses its `SimHei.ttf`, `SimSun.ttf`, and `SimKai.ttf` files.
+- `Colayout-pure/`: historical project retained for reference. The V1 style
+  system no longer reads it directly; local font copies live under
+  `assets/fonts/`.
 
-The source trees themselves are ignored by the root repository. Later cleanup
-steps will pin MinerU reproducibly and move the required fonts into a dedicated
-HammerTranslator asset directory.
+The source trees themselves are ignored by the root repository. A later cleanup
+step will pin MinerU reproducibly.

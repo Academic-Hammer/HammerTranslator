@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 import fitz
+
+from ..font_assets import FontAssetError, resolve_registered_font
 from pydantic import ValidationError
 
 from hammer_translator.translation.layout import (
@@ -111,11 +113,11 @@ class ThinReflowRenderer:
     @staticmethod
     def _verify_fonts(profile: dict[str, Any]) -> None:
         for font_id, record in profile.get("fonts", {}).items():
-            path = Path(str(record.get("path") or "")).expanduser().resolve()
-            if not path.is_file():
-                raise ReflowContractError(f"registered Reflow font is missing: {path}")
-            if _sha256(path) != record.get("sha256"):
-                raise ReflowContractError(f"registered Reflow font hash changed: {font_id}")
+            try:
+                path = resolve_registered_font(record)
+            except FontAssetError as exc:
+                raise ReflowContractError(f"cannot resolve Reflow font {font_id}: {exc}") from exc
+            record["path"] = str(path)
 
     @staticmethod
     def _verify_formula_assets(
@@ -504,6 +506,7 @@ class ThinReflowRenderer:
         font_cache: dict[str, fitz.Font],
     ) -> None:
         font_record = profile["fonts"][job.style["font_id"]]
+        # _verify_fonts resolves and verifies each record once before rendering.
         font_path = str(Path(font_record["path"]).resolve())
         font = font_cache.get(job.style["font_id"])
         if font is None:

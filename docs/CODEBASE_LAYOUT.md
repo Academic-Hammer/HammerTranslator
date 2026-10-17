@@ -18,7 +18,8 @@
 ## External and ignored
 
 - `external/MinerU/`: MinerU 3.4.4 local source tree.
-- `external/Colayout-pure/`: temporary source of three Chinese fonts.
+- `external/Colayout-pure/`: historical reference project; no active code
+  dependency remains.
 
 ## Legacy and preserved
 
@@ -54,3 +55,15 @@ All local data and runtime paths are excluded from version control.
   longer depends on a root implementation script.
 - The root `batch_parse_pdfs_mac.py` file contains only compatibility imports
   and delegates to the package CLI.
+
+## Step 4 font assets
+
+- Active font discovery is owned by `hammer_translator.font_assets`.
+- The canonical local directory is `assets/fonts/`; an operator may override it
+  with `HAMMERTRANSLATOR_FONTS_DIR`.
+- The three V1 font binaries are hash-pinned but ignored by Git because the
+  preserved local files do not include redistribution permission.
+- Translation artifacts keep absolute and project-relative font locations.
+  Layout and Reflow can therefore resolve the same verified font after a job or
+  checkout moves to another machine.
+- No active module reads `external/Colayout-pure`.

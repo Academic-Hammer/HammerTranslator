@@ -7,11 +7,15 @@ import math
 import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Iterable
 
 import fitz
 
+from ..font_assets import (
+    FontAssetError,
+    canonical_project_relative_path,
+    required_font_path,
+)
 from .loader import LoadedBlock
 from .taxonomy import ElementType
 from .units import TranslationPlan, TranslationUnit
@@ -19,8 +23,6 @@ from .units import TranslationPlan, TranslationUnit
 
 STYLE_SCHEMA_VERSION = "layout-style-v1"
 MEASUREMENT_ENGINE_VERSION = "layout-metrics-v2"
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-FONTS_DIR = PROJECT_ROOT / "external" / "Colayout-pure" / "fonts"
 
 
 @dataclass(frozen=True)
@@ -57,14 +59,6 @@ ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
     "table": {"scale": 0.90, "line": 1.15, "font_category": "body", "shrink": 0.12},
     "equation": {"scale": 1.00, "line": 1.20, "font_category": "body", "shrink": 0.10},
     "other": {"scale": 1.00, "line": 1.20, "font_category": "body", "shrink": 0.10},
-}
-
-
-FONT_FILES = {
-    "title": "SimHei.ttf",
-    "heading": "SimHei.ttf",
-    "body": "SimSun.ttf",
-    "caption": "SimKai.ttf",
 }
 
 
@@ -250,10 +244,10 @@ def _rgb_hex(color: int) -> str:
 
 
 def _font_record(category: str) -> dict[str, Any]:
-    filename = FONT_FILES[category]
-    path = (FONTS_DIR / filename).resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"required bundled Chinese font is missing: {path}")
+    try:
+        path = required_font_path(category)
+    except FontAssetError as exc:
+        raise FileNotFoundError(str(exc)) from exc
     data = path.read_bytes()
     font = fitz.Font(fontfile=str(path))
     if font.text_length("中文", fontsize=10) <= 0:
@@ -262,7 +256,7 @@ def _font_record(category: str) -> dict[str, Any]:
         "font_id": f"zh_{category}_regular",
         "family": font.name,
         "path": str(path),
-        "project_relative_path": str(path.relative_to(PROJECT_ROOT)),
+        "project_relative_path": canonical_project_relative_path(category),
         "sha256": hashlib.sha256(data).hexdigest(),
         "ascender": round(float(font.ascender), 6),
         "descender": round(float(font.descender), 6),

@@ -24,6 +24,12 @@ dist/
 # JavaScript dependencies are restored from package-lock.json
 node_modules/
 
+# Locally licensed font binaries. Metadata and installation instructions under
+# assets/fonts remain versioned, but the font files themselves are not.
+assets/fonts/*.ttf
+assets/fonts/*.ttc
+assets/fonts/*.otf
+
 # Logs, caches, and temporary files
 *.log
 tmp/
@@ -35,6 +41,8 @@ input_pdf/
 
 # Local datasets, historical outputs, and archives
 local_data/
+/270-new/
+/270-new.zip
 
 # Historical projects retained locally during cleanup
 legacy/projects/

@@ -10,6 +10,8 @@ from typing import Any
 
 import fitz
 
+from ..font_assets import FontAssetError, resolve_registered_font
+
 
 class LayoutMetricError(ValueError):
     pass
@@ -272,9 +274,10 @@ class LayoutMetrics:
         record = self.fonts.get(font_id)
         if not isinstance(record, dict):
             raise LayoutMetricError(f"font_id is not registered: {font_id}")
-        path = Path(str(record.get("path") or "")).expanduser().resolve()
-        if not path.is_file():
-            raise LayoutMetricError(f"registered font file is missing: {path}")
+        try:
+            path = resolve_registered_font(record)
+        except FontAssetError as exc:
+            raise LayoutMetricError(str(exc)) from exc
         try:
             font = fitz.Font(fontfile=str(path))
         except Exception as exc:
