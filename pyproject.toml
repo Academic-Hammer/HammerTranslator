@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "hammer-translator"
 version = "1.0.0"
 description = "Local PDF parsing, translation, fixed-layout reflow, and validation pipeline"
+readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "PyMuPDF==1.26.6",
@@ -23,6 +24,7 @@ hammer-translate = "hammer_translator.translation.cli:main"
 hammer-reflow = "hammer_translator.reflow.cli:main"
 hammer-mineru-adapt = "mineru_adapter.cli:main"
 hammer-doctor = "hammer_translator.doctor:main"
+hammer-smoke = "hammer_translator.smoke:main"
 
 [tool.setuptools.packages.find]
 include = ["hammer_translator*", "mineru_adapter*"]

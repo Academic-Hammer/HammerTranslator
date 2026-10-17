@@ -16,8 +16,8 @@ python -m pip install -e .
 Use `requirements/linux-gpu.txt` instead of `requirements/macos.txt` on the
 server. A non-editable `python -m pip install .` is recommended for a packaged
 deployment. After installation, `hammer-parse`, `hammer-translate`,
-`hammer-reflow`, `hammer-translator`, and `hammer-doctor` work from any current
-directory.
+`hammer-reflow`, `hammer-translator`, `hammer-doctor`, and `hammer-smoke` work
+from any current directory.
 
 ## Runtime locations
 
@@ -73,6 +73,15 @@ provider configuration without exposing secrets, font integrity, Node/MathJax,
 writable job/temp destinations, and the selected MinerU backend. `--json`
 provides a machine-readable readiness report. Warnings do not fail the command;
 any error returns exit code 2.
+
+After the preflight, run the zero-network installed-core smoke test:
+
+```bash
+hammer-smoke
+```
+
+It validates the Translation and Reflow module entry points and preserves a
+one-page fixture's geometry. It deliberately does not run MinerU or a provider.
 
 ## Compatibility entry points
 

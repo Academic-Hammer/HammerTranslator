@@ -73,7 +73,7 @@ All local data and runtime paths are excluded from version control.
 ## Step 5 dependency boundaries
 
 - `pyproject.toml` owns the V1 application package, six direct Python
-  dependencies, and six supported console entry points.
+  dependencies, and seven supported console entry points.
 - `requirements/core.txt` is platform-neutral; `macos.txt` and
   `linux-gpu.txt` add exactly one MinerU parser stack.
 - The pre-cleanup Linux/CUDA environment freeze remains under
@@ -112,3 +112,12 @@ All local data and runtime paths are excluded from version control.
   without printing credential values.
 - Environment variables and installed/source defaults are documented in
   `docs/RUNTIME_CONFIGURATION.md`.
+
+## Step 8 release acceptance
+
+- `README.md` is the installed package overview and canonical first-run guide.
+- `hammer-smoke` runs a deterministic, zero-network Translation-to-Reflow
+  fixture through installed module entry points and verifies PDF page geometry.
+- The smoke test explicitly does not claim MinerU or GPU readiness; those are
+  checked separately by `hammer-doctor` and an actual two-page parser run.
+- `docs/RELEASE_CHECKLIST.md` defines separate source, Mac, and Linux/GPU gates.

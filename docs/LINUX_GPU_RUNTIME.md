@@ -19,13 +19,18 @@ documents.
 
 ## Install
 
-From the repository root in a fresh environment:
+Build the application wheel from a reviewed source checkout:
 
 ```bash
-python -m pip install -r requirements/linux-gpu.txt
-python -m pip install .
+python -m pip wheel . --no-deps --no-build-isolation --wheel-dir dist
+python -m pip install -r requirements/linux-gpu-parser.txt
+python -m pip install dist/hammer_translator-1.0.0-py3-none-any.whl
 npm --prefix formula_runtime ci --ignore-scripts --no-audit --no-fund
 ```
+
+`requirements/linux-gpu.txt` remains the convenient editable install for
+development directly from a checkout. Production uses the parser-only file so
+an editable source tree cannot shadow the installed wheel.
 
 Install the licensed fonts according to `assets/fonts/README.md`, or set
 `HAMMERTRANSLATOR_FONTS_DIR` to an operator-managed directory containing the
@@ -38,6 +43,7 @@ Run the complete application preflight first:
 ```bash
 hammer-doctor --profile linux_gpu --backend pipeline \
   --provider deepseek --require-provider-key
+hammer-smoke
 ```
 
 The narrower parser-only checks below remain useful when diagnosing MinerU.

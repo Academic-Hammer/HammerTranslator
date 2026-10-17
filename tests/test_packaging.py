@@ -25,11 +25,14 @@ class PackagingContractTest(unittest.TestCase):
                 "hammer-reflow",
                 "hammer-mineru-adapt",
                 "hammer-doctor",
+                "hammer-smoke",
             },
         )
         for target in project["scripts"].values():
             module_name, attribute = target.split(":", maxsplit=1)
             self.assertTrue(callable(getattr(import_module(module_name), attribute)))
+        self.assertEqual(project["readme"], "README.md")
+        self.assertTrue((PROJECT_ROOT / project["readme"]).is_file())
 
     def test_installed_runtime_resources_are_declared_and_match_source(self) -> None:
         package_resources = PROJECT_ROOT / "hammer_translator" / "resources"
@@ -68,10 +71,18 @@ class PackagingContractTest(unittest.TestCase):
     def test_platform_overlays_pin_mineru_344(self) -> None:
         macos = (PROJECT_ROOT / "requirements" / "macos.txt").read_text(encoding="utf-8")
         linux = (PROJECT_ROOT / "requirements" / "linux-gpu.txt").read_text(encoding="utf-8")
-        self.assertIn("mineru[pipeline,mlx]==3.4.4", macos)
-        self.assertIn("mineru[pipeline,vllm]==3.4.4", linux)
-        self.assertNotIn("vllm", macos.lower())
-        self.assertNotIn("mlx", linux.lower())
+        macos_parser = (PROJECT_ROOT / "requirements" / "macos-parser.txt").read_text(
+            encoding="utf-8"
+        )
+        linux_parser = (
+            PROJECT_ROOT / "requirements" / "linux-gpu-parser.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn("-r macos-parser.txt", macos)
+        self.assertIn("-r linux-gpu-parser.txt", linux)
+        self.assertIn("mineru[pipeline,mlx]==3.4.4", macos_parser)
+        self.assertIn("mineru[pipeline,vllm]==3.4.4", linux_parser)
+        self.assertNotIn("vllm", macos_parser.lower())
+        self.assertNotIn("mlx", linux_parser.lower())
 
     def test_old_linux_freeze_is_preserved_but_not_active(self) -> None:
         legacy = PROJECT_ROOT / "legacy" / "requirements" / "linux-cuda-freeze-pre-v1.txt"
