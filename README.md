@@ -1,5 +1,7 @@
 # HammerTranslator
 
+[简体中文说明](README.zh-CN.md)
+
 HammerTranslator V1 converts an English PDF into a Simplified-Chinese PDF while
 preserving the source page geometry and fixed content boxes. Its four pipeline
 stages are MinerU parsing, protected-content translation, fixed-layout Reflow,
