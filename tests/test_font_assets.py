@@ -12,6 +12,7 @@ from hammer_translator.font_assets import (
     FONT_DIRECTORY_ENV,
     FontAssetError,
     canonical_project_relative_path,
+    configured_fonts_dir,
     font_manifest,
     required_font_path,
     resolve_registered_font,
@@ -19,7 +20,7 @@ from hammer_translator.font_assets import (
 
 
 class FontAssetTests(unittest.TestCase):
-    def test_default_fonts_are_packaged_and_verified(self) -> None:
+    def test_default_fonts_are_pinned_and_verified(self) -> None:
         self.assertEqual(
             set(font_manifest()["fonts"]),
             {
@@ -30,7 +31,7 @@ class FontAssetTests(unittest.TestCase):
         for category in ("title", "heading", "body", "caption"):
             path = required_font_path(category)
             self.assertTrue(path.is_file())
-            self.assertEqual(path.parent.name, "fonts")
+            self.assertEqual(path.parent, configured_fonts_dir())
             self.assertEqual(canonical_project_relative_path(category), "")
 
     def test_custom_font_directory_can_supply_a_pinned_legacy_manifest(self) -> None:

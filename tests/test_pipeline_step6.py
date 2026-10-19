@@ -106,6 +106,8 @@ class FullPipelineCliTests(unittest.TestCase):
                         "run",
                         str(_pdf(root / "sample.pdf")),
                         "--run",
+                        "--environment-profile",
+                        "local_mac",
                         "--parser-backend",
                         "vlm-engine",
                         "--parser-device",
