@@ -41,11 +41,14 @@ python -m pip install -r requirements/linux-gpu.txt
 ```bash
 npm --prefix formula_runtime ci --ignore-scripts --no-audit --no-fund
 hammer-fonts install
+hammer-fonts check
 ```
 
 `hammer-fonts install` 会从作者的官方仓库下载[霞鹜文楷 Medium](https://github.com/lxgw/LxgwWenKai/blob/7ebd0771fda4285299670f83c398f32f32c7bef8/fonts/TTF/LXGWWenKai-Medium.ttf)和[霞鹜文楷 Regular](https://github.com/lxgw/LxgwWenKai/blob/7ebd0771fda4285299670f83c398f32f32c7bef8/fonts/TTF/LXGWWenKai-Regular.ttf)，校验固定版本的文件大小及 SHA-256，并安装至 `~/.hammer-translator/fonts/`。授权和清单见[字体说明](hammer_translator/resources/fonts/README.md)。该命令可重复执行，已校验通过的文件不会再次下载。
 
 若服务器无法访问 GitHub，可在其他设备下载这两个文件，保持原文件名并传到服务器同一个目录，然后运行 `hammer-fonts install --from-dir /path/to/downloaded-fonts`。离线安装仍会校验文件大小和 SHA-256，并一同安装授权说明。
+
+升级已有部署时，如果 `~/.hammer-translator/fonts/` 中仍是旧字体，请保留该目录供旧任务使用，先将 `HAMMERTRANSLATOR_FONTS_DIR` 指向新的空目录，再执行上述字体安装与检查命令。后续翻译和回填渲染也要保持相同的设置。
 
 如果要在 Linux 上安装非可编辑版本，请参考 [Linux/GPU 部署说明](docs/LINUX_GPU_RUNTIME.md)中的 wheel 安装方式。锁定的解析依赖仍需与服务器驱动及 Python/CUDA 运行时兼容。
 

@@ -41,6 +41,7 @@ Both files install this checkout in editable mode. Restore the local MathJax run
 ```bash
 npm --prefix formula_runtime ci --ignore-scripts --no-audit --no-fund
 hammer-fonts install
+hammer-fonts check
 ```
 
 `hammer-fonts install` downloads [LXGW WenKai Medium](https://github.com/lxgw/LxgwWenKai/blob/7ebd0771fda4285299670f83c398f32f32c7bef8/fonts/TTF/LXGWWenKai-Medium.ttf) and [Regular](https://github.com/lxgw/LxgwWenKai/blob/7ebd0771fda4285299670f83c398f32f32c7bef8/fonts/TTF/LXGWWenKai-Regular.ttf) from the official repository, verifies their pinned size and SHA-256, and installs them into `~/.hammer-translator/fonts/`. See the [font manifest and license](hammer_translator/resources/fonts/README.md). You can run the command again safely; already verified files are not downloaded twice.
@@ -49,6 +50,11 @@ If a server cannot reach GitHub, download those two files on another machine,
 transfer them to one server directory without renaming them, and run
 `hammer-fonts install --from-dir /path/to/downloaded-fonts`. The same size and
 SHA-256 checks apply; the license notice is installed alongside the fonts.
+
+When upgrading an older installation that already has different fonts in
+`~/.hammer-translator/fonts/`, keep that directory for existing jobs and set
+`HAMMERTRANSLATOR_FONTS_DIR` to a new, empty directory before running the two
+font commands. Keep the same setting when translating and rendering.
 
 For a non-editable Linux installation, see the [Linux GPU runtime guide](docs/LINUX_GPU_RUNTIME.md) for the wheel-based procedure. The pinned parser dependencies still require a compatible host driver and Python/CUDA runtime.
 
