@@ -24,8 +24,8 @@ dist/
 # JavaScript dependencies are restored from package-lock.json
 node_modules/
 
-# Locally licensed font binaries. Metadata and installation instructions under
-# assets/fonts remain versioned, but the font files themselves are not.
+# Optional operator-owned fonts are never committed. The default font manifest
+# and OFL notice are versioned; binaries are installed with `hammer-fonts`.
 assets/fonts/*.ttf
 assets/fonts/*.ttc
 assets/fonts/*.otf

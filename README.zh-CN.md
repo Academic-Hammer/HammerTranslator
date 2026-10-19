@@ -2,58 +2,108 @@
 
 [English](README.md)
 
-HammerTranslator V1 将英文 PDF 解析、翻译并回填为简体中文 PDF，尽量保持原始页数、页面尺寸和文本边界框。完整流程依次为 MinerU 解析、受保护内容翻译、固定布局回填（Reflow）和最终 PDF 验证。
+HammerTranslator 将英文科研 PDF 转换为简体中文 PDF。它使用 MinerU 解析文档，通过大语言模型服务翻译可处理的文字，再将译文回填到原页面布局中，最后验证生成的 PDF。页面尺寸和文字边界框保持不变；无法安全回填的内容可以保留原文，并标记为待复核。
 
-当前 V1 适合单用户运行。Apple Silicon Mac 是本地开发环境；Linux/NVIDIA GPU 命令行环境已在 a6000 完成实际部署与端到端测试。面向公网的多用户服务和富文本样式重建尚未纳入 V1。
+V1 是**单用户命令行程序**，支持 Apple Silicon macOS 和配备 NVIDIA GPU 的 Linux。当前版本不包含网页前端，也不能直接作为面向公网的多用户服务部署。
 
-## 在 Mac 上安装
+## 运行前准备
 
-在仓库根目录执行：
+- Git、Conda、带 npm 的 Node.js（部署时使用过 Node.js 22）。
+- Conda 环境中的 Python 3.12。软件包声明支持 Python 3.11–3.13，已测试的基线版本是 3.12。
+- Apple Silicon Mac，或装有可用 NVIDIA 驱动和 GPU 的 `x86_64` Linux 服务器。本项目不会安装 GPU 驱动。
+- 翻译服务的 API key（下文以 DeepSeek 为例）。真实翻译会请求服务商 API，可能产生费用。
+- 下载安装两款 [SIL OFL 授权的默认字体](hammer_translator/resources/fonts/README.md)所需的网络连接。字体二进制文件单独安装，避免增大 Git 仓库和 Python wheel。
+- 下载 MinerU 模型所需的磁盘空间与网络连接。首次解析可能因下载模型而更慢。
+
+## 从源码安装
+
+克隆仓库，并在仓库根目录执行后续命令：
 
 ```bash
+git clone https://github.com/Academic-Hammer/HammerTranslator.git
+cd HammerTranslator
+conda create -n hammertrans python=3.12 -y
 conda activate hammertrans
-python -m pip install -r requirements/macos.txt
-npm --prefix formula_runtime ci --ignore-scripts --no-audit --no-fund
 ```
 
-按 [字体说明](assets/fonts/README.md)放置 `SimHei.ttf`、`SimSun.ttf` 和 `SimKai.ttf`。将 `.env.example` 复制为本地 `.env`，只填写实际使用的翻译服务凭据。字体二进制文件和 `.env` 不提交到 Git。
-
-## 环境检查
+根据设备类型，**只安装其中一组**依赖：
 
 ```bash
+# Apple Silicon macOS
+python -m pip install -r requirements/macos.txt
+
+# 或：配备 NVIDIA GPU 的 Linux
+python -m pip install -r requirements/linux-gpu.txt
+```
+
+这两组依赖都会以可编辑模式安装当前源码。接着安装公式渲染使用的本地 MathJax：
+
+```bash
+npm --prefix formula_runtime ci --ignore-scripts --no-audit --no-fund
+hammer-fonts install
+```
+
+`hammer-fonts install` 会从作者的官方仓库下载[霞鹜文楷 Medium](https://github.com/lxgw/LxgwWenKai/blob/7ebd0771fda4285299670f83c398f32f32c7bef8/fonts/TTF/LXGWWenKai-Medium.ttf)和[霞鹜文楷 Regular](https://github.com/lxgw/LxgwWenKai/blob/7ebd0771fda4285299670f83c398f32f32c7bef8/fonts/TTF/LXGWWenKai-Regular.ttf)，校验固定版本的文件大小及 SHA-256，并安装至 `~/.hammer-translator/fonts/`。授权和清单见[字体说明](hammer_translator/resources/fonts/README.md)。该命令可重复执行，已校验通过的文件不会再次下载。
+
+若服务器无法访问 GitHub，可在其他设备下载这两个文件，保持原文件名并传到服务器同一个目录，然后运行 `hammer-fonts install --from-dir /path/to/downloaded-fonts`。离线安装仍会校验文件大小和 SHA-256，并一同安装授权说明。
+
+如果要在 Linux 上安装非可编辑版本，请参考 [Linux/GPU 部署说明](docs/LINUX_GPU_RUNTIME.md)中的 wheel 安装方式。锁定的解析依赖仍需与服务器驱动及 Python/CUDA 运行时兼容。
+
+## 配置 API key
+
+复制环境变量示例文件，再只在本机编辑 `.env`：
+
+```bash
+cp .env.example .env
+```
+
+默认使用 DeepSeek 时，在 `.env` 中填写 `TRANSLATION_API_KEY`；选择 `openai` 时填写 `OPENAI_API_KEY`。服务地址、模型以及变量名在 [translation_config.yaml](translation_config.yaml) 中配置，不要把密钥明文写入 YAML。进程中已有的环境变量优先于 `.env`。**不要提交 `.env` 或任何真实密钥。**
+
+默认使用霞鹜文楷 Medium 排标题和小标题，Regular 排正文和图注。若已有其他合法授权字体，可通过 `HAMMERTRANSLATOR_FONTS_DIR` 指定自定义字体集；旧字体的兼容方式见[说明](assets/fonts/README.md)。更换字体会改变排版测量结果，使用自定义字体时请检查生成的 PDF。
+
+从本仓库运行时，任务默认保存在 `var/jobs/`，密钥文件默认是仓库根目录的 `.env`。需要将运行数据放在其他位置时，可设置 `HAMMERTRANSLATOR_HOME` 或按[运行路径说明](docs/RUNTIME_CONFIGURATION.md)分别指定。执行 `run`、`status` 和 `resume` 时须使用同一个任务目录。
+
+## 检查安装情况
+
+按运行设备选择预检命令：
+
+```bash
+# macOS
 hammer-doctor --profile local_mac --backend pipeline \
   --provider deepseek --require-provider-key
+
+# Linux/NVIDIA
+hammer-doctor --profile linux_gpu --backend pipeline \
+  --provider deepseek --require-provider-key
+```
+
+预检会检查软件包和解析依赖、服务配置、字体哈希、MathJax、运行目录是否可写；不会打印密钥。Linux 预检还会检查 CUDA。随后可运行离线冒烟测试，验证翻译与回填模块的基本调用；它**不会**运行 MinerU，也不会调用翻译 API：
+
+```bash
 hammer-smoke
 ```
 
-`hammer-doctor` 检查依赖、凭据是否存在、字体校验、MathJax 和运行目录，不打印密钥值。`hammer-smoke` 是离线的 Translation→Reflow 测试，不会调用 MinerU 或翻译 API。
+出现预检错误时应先修复再处理真实文档。依赖安装成功不代表 MinerU 模型已缓存完毕。
 
-在 Linux/GPU 环境中，将预检参数改为 `--profile linux_gpu`。详细依赖和安装方式见 [Linux/GPU 说明](docs/LINUX_GPU_RUNTIME.md)。
+## 翻译 PDF
 
-## 运行完整流程
-
-以下命令会实际调用 MinerU 和所选翻译服务，因此可能产生 API 费用：
+在仓库根目录运行完整的“解析 → 翻译 → 回填 → 验证”流程：
 
 ```bash
-conda run --no-capture-output -n hammertrans \
-  hammer-translator \
-  --jobs-root var/jobs \
-  run input.pdf \
-  --run \
-  --environment-profile local_mac \
-  --parser-backend pipeline \
-  --provider deepseek
+# macOS
+hammer-translator --jobs-root var/jobs run /path/to/input.pdf \
+  --run --environment-profile local_mac \
+  --parser-backend pipeline --provider deepseek
+
+# Linux/NVIDIA
+hammer-translator --jobs-root var/jobs run /path/to/input.pdf \
+  --run --environment-profile linux_gpu \
+  --parser-backend pipeline --parser-device cuda --provider deepseek
 ```
 
-在 Linux/GPU 环境中使用 `--environment-profile linux_gpu --parser-device cuda`，并先用 `nvidia-smi` 确认目标 GPU 有足够空闲显存。需要固定某张卡时，可在命令前设置 `CUDA_VISIBLE_DEVICES=GPU编号`。`pipeline` 是当前常用的解析后端；只有需要视觉语言模型路径时才选择 `vlm-engine`。
+输入必须是 PDF。`--run` 会实际调用 MinerU 和翻译服务；`--simulate` 只测试流程契约，结果不能作为正式译文发布。推荐默认使用 `pipeline` 解析后端；`vlm-engine` 和 `hybrid-engine` 需要满足各自的模型及运行条件，资源消耗可能明显更高。Linux 上可在命令前设置 `CUDA_VISIBLE_DEVICES=GPU编号` 选择 GPU。若只想先解析前两页，可在 `run` 命令末尾加 `--parser-start-page 0 --parser-end-page 1`（页码从 0 开始，包含结束页）；处理完整 PDF 时不要加这两个参数。
 
-命令开始时会打印任务 ID（下文记为 `JOB_ID`）。`--jobs-root` 决定任务存储位置，命令在不同工作目录执行时，相对路径可能指向不同位置；正式运行建议使用绝对路径。每次 `run` 都会创建新任务，不会覆盖旧任务。
-
-要先测试前两页，在 `run` 命令末尾加上 `--parser-start-page 0 --parser-end-page 1`；完整论文测试请省略这两个参数。页码从 0 开始。
-
-## 查看状态和结果
-
-查看任务状态、事件，或恢复可重试的失败任务：
+命令开始时会显示任务 ID，并实时输出进度。使用该 ID 和同一个任务目录查看或恢复任务：
 
 ```bash
 hammer-translator --jobs-root var/jobs status JOB_ID
@@ -61,26 +111,19 @@ hammer-translator --jobs-root var/jobs events JOB_ID
 hammer-translator --jobs-root var/jobs resume JOB_ID --run
 ```
 
-主要产物位于 `<jobs-root>/<JOB_ID>/`：
+`resume` 会重试失败任务，不重复已完成的阶段。每次 `run` 都会新建任务。如果后续命令可能在不同工作目录执行，建议为 `--jobs-root` 使用绝对路径。
 
-| 路径 | 内容 |
-| --- | --- |
-| `input/source.pdf` | 本任务保存的原始 PDF 副本 |
-| `parse/` | MinerU 输出及适配后的 JSON |
-| `translation/` | 译文、布局规划和阶段记录 |
-| `output/translated.pdf` | 回填后的 PDF |
-| `output/reflow_feedback.json` | 回填结果与待复核信息 |
-| `output/validation_report.json` | 最终 PDF 验证报告 |
-| `job.json`、`events.jsonl` | 任务状态与进度事件 |
+## 获取和检查结果
 
-`completed` 表示全部阶段成功且没有警告；`completed_with_warnings` 表示已生成 PDF，但仍有待复核内容。V1 会在原位置保留无法安全处理的内容，不会依据人工回复自动修改 PDF。参考文献、独立公式中的英文说明等内容按当前策略保留原文。验收时应同时查看验证报告和 PDF 的实际视觉效果。
+任务成功后，译后 PDF 位于 `var/jobs/JOB_ID/output/translated.pdf`（或指定的任务目录下）。同一任务目录还保存输入 PDF 副本、解析及翻译产物、`output/reflow_feedback.json`、`output/validation_report.json`、`job.json` 和 `events.jsonl`。
 
-## 更多文档
+`completed_with_warnings` 表示已生成 PDF，但仍有内容需要复核。默认情况下，无法安全处理的区域会保留原文，而不是强行塞入固定边界框。V1 没有“人工回复后自动改写 PDF”的闭环；参考文献、独立公式中的英文说明等也可能按规则保留原文。交付前请检查验证报告和 PDF 实际视觉效果；V1 尚未完整还原加粗、斜体等富文本样式。
 
-- [Pipeline 阶段和产物契约](PIPELINE_V1.md)
+## 进一步了解
+
 - [运行路径与环境变量](docs/RUNTIME_CONFIGURATION.md)
-- [Linux/GPU 安装与预检](docs/LINUX_GPU_RUNTIME.md)
-- [发布与迁移检查清单](docs/RELEASE_CHECKLIST.md)
-- [翻译阶段设计记录](TRANSLATION_REWRITE_GUIDE.md)
+- [Linux/NVIDIA 部署细节](docs/LINUX_GPU_RUNTIME.md)
+- [Pipeline 阶段与产物契约](PIPELINE_V1.md)
+- [依赖分层](requirements/README.md)
 
-仓库根目录的旧 Python 脚本仍作为兼容入口保留；新部署优先使用安装后的 `hammer-*` 命令。
+仓库根目录的旧 Python 脚本仍作为兼容入口保留；新安装建议使用上文的 `hammer-*` 命令。

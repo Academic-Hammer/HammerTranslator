@@ -24,6 +24,7 @@ hammer-translate = "hammer_translator.translation.cli:main"
 hammer-reflow = "hammer_translator.reflow.cli:main"
 hammer-mineru-adapt = "mineru_adapter.cli:main"
 hammer-doctor = "hammer_translator.doctor:main"
+hammer-fonts = "hammer_translator.fonts_cli:main"
 hammer-smoke = "hammer_translator.smoke:main"
 
 [tool.setuptools.packages.find]
@@ -34,6 +35,8 @@ namespaces = false
 hammer_translator = [
   "resources/*.yaml",
   "resources/fonts/*.json",
+  "resources/fonts/*.md",
+  "resources/fonts/*.txt",
   "resources/formula_runtime/*.json",
   "resources/formula_runtime/*.mjs",
 ]

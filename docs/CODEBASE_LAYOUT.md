@@ -61,10 +61,11 @@ All local data and runtime paths are excluded from version control.
 ## Step 4 font assets
 
 - Active font discovery is owned by `hammer_translator.font_assets`.
-- The canonical local directory is `assets/fonts/`; an operator may override it
-  with `HAMMERTRANSLATOR_FONTS_DIR`.
-- The three V1 font binaries are hash-pinned but ignored by Git because the
-  preserved local files do not include redistribution permission.
+- The default runtime directory is `~/.hammer-translator/fonts/`; install the
+  hash-pinned OFL fonts with `hammer-fonts install`. An operator may override
+  the directory with `HAMMERTRANSLATOR_FONTS_DIR`.
+- `assets/fonts/` retains the manifest for an optional legacy font set; its
+  binaries are ignored by Git and are not redistributed.
 - Translation artifacts keep absolute and project-relative font locations.
   Layout and Reflow can therefore resolve the same verified font after a job or
   checkout moves to another machine.
@@ -105,9 +106,9 @@ All local data and runtime paths are excluded from version control.
 - Parsing, Translation, and Reflow child processes use package module entry
   points. The root scripts are compatibility shims and are no longer pipeline
   dependencies.
-- Safe default configuration and resource manifests are packaged under
-  `hammer_translator/resources/`; licensed fonts and restored npm dependencies
-  remain operator-owned.
+- Safe default configuration, the font manifest and OFL notice are packaged
+  under `hammer_translator/resources/`; downloaded font binaries and restored
+  npm dependencies remain operator-owned.
 - `hammer-doctor --profile local_mac|linux_gpu` validates the complete runtime
   without printing credential values.
 - Environment variables and installed/source defaults are documented in

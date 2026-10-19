@@ -27,9 +27,8 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-@lru_cache(maxsize=1)
-def font_manifest() -> dict[str, Any]:
-    manifest_path = runtime_paths().font_manifest_path
+@lru_cache(maxsize=8)
+def _load_font_manifest(manifest_path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -40,6 +39,12 @@ def font_manifest() -> dict[str, Any]:
     if not isinstance(fonts, dict) or not fonts:
         raise FontAssetError("font manifest does not define any fonts")
     return payload
+
+
+def font_manifest() -> dict[str, Any]:
+    # A font-directory override can supply its own pinned manifest. Cache by
+    # path rather than globally so changing profiles never reuses another set.
+    return _load_font_manifest(runtime_paths().font_manifest_path)
 
 
 def configured_fonts_dir() -> Path:
@@ -69,8 +74,8 @@ def required_font_path(category: str) -> Path:
     path = configured_fonts_dir() / filename
     if not path.is_file():
         raise FontAssetError(
-            f"required font is missing: {path}; provide assets/fonts or set "
-            f"{FONT_DIRECTORY_ENV}"
+            f"required font is missing: {path}; run 'hammer-fonts install' "
+            f"or set {FONT_DIRECTORY_ENV} to a licensed font set"
         )
     if not _verified(path, expected_font_hash(filename)):
         raise FontAssetError(f"required font hash does not match manifest: {path}")
@@ -78,7 +83,14 @@ def required_font_path(category: str) -> Path:
 
 
 def canonical_project_relative_path(category: str) -> str:
-    return (Path("assets") / "fonts" / font_filename(category)).as_posix()
+    path = required_font_path(category)
+    source_root = runtime_paths().source_root
+    if source_root is not None:
+        try:
+            return path.relative_to(source_root).as_posix()
+        except ValueError:
+            pass
+    return ""
 
 
 def resolve_registered_font(record: Mapping[str, Any]) -> Path:

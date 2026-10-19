@@ -10,13 +10,15 @@ verification. Passing the Mac checks does not prove CUDA or vLLM readiness.
 - `python -m unittest discover -s tests -v` passes in `hammertrans`.
 - `python -m pip wheel . --no-deps --no-build-isolation` builds successfully.
 - The wheel starts `hammer-translator`, `hammer-parse`, `hammer-translate`,
-  `hammer-reflow`, `hammer-doctor`, and `hammer-smoke` outside the checkout.
-- Packaged configuration, font manifest, MathJax bridge, and npm lockfile match
-  their source copies.
+  `hammer-reflow`, `hammer-fonts`, `hammer-doctor`, and `hammer-smoke` outside
+  the checkout, and contains no font binaries.
+- Packaged configuration, font manifest and OFL notice, MathJax bridge, and npm
+  lockfile are present.
 
 ## Local Mac gate
 
 ```bash
+hammer-fonts install
 hammer-doctor --profile local_mac --backend pipeline --provider deepseek \
   --require-provider-key
 hammer-smoke
@@ -33,7 +35,8 @@ Perform these checks on the actual server; they cannot be accepted from macOS:
 1. Record the Linux distribution, kernel, Python, NVIDIA driver, GPU model and
    memory, CUDA runtime reported by PyTorch, and free disk space.
 2. Install `requirements/linux-gpu-parser.txt`, the application wheel, locked
-   MathJax dependencies, and the verified licensed fonts. Do not install the
+   MathJax dependencies, and run `hammer-fonts install` (or its verified
+   `--from-dir` mode on a network-restricted host). Do not install the
    editable `linux-gpu.txt` overlay on the production host.
 3. Set operator-owned paths and secrets through the documented environment
    variables. Do not copy the developer `.env` into an image or commit it.

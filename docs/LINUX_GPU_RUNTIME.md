@@ -32,9 +32,11 @@ npm --prefix formula_runtime ci --ignore-scripts --no-audit --no-fund
 development directly from a checkout. Production uses the parser-only file so
 an editable source tree cannot shadow the installed wheel.
 
-Install the licensed fonts according to `assets/fonts/README.md`, or set
-`HAMMERTRANSLATOR_FONTS_DIR` to an operator-managed directory containing the
-verified font files.
+After installing the wheel, run `hammer-fonts install` to download and verify
+the OFL-licensed default fonts. Set `HAMMERTRANSLATOR_FONTS_DIR` only when using
+an operator-managed custom set.
+If GitHub is unreachable from the server, transfer the two files linked in the
+root README and use `hammer-fonts install --from-dir /path/to/downloaded-fonts`.
 
 ## Preflight
 

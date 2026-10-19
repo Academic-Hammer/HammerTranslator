@@ -89,16 +89,9 @@ def runtime_paths(environ: Mapping[str, str] | None = None) -> RuntimePaths:
         else resources_root / "translation_config.yaml"
     )
     operator_home_is_explicit = bool(env.get(APP_HOME_ENV, "").strip())
-    source_fonts = source_root / "assets" / "fonts" if source_root else None
-    fonts_default = (
-        source_fonts
-        if (
-            not operator_home_is_explicit
-            and source_fonts is not None
-            and source_fonts.is_dir()
-        )
-        else app_home / "fonts"
-    )
+    # Font binaries are installed into operator-owned state by hammer-fonts.
+    # The package retains only the pinned manifest, source URLs, and licenses.
+    fonts_default = app_home / "fonts"
     source_formula = source_root / "formula_runtime" if source_root else None
     formula_default = (
         source_formula

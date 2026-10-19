@@ -1,21 +1,26 @@
-# Local font assets
+# Optional legacy font set
 
-HammerTranslator V1 requires three exact Chinese font files for deterministic
-layout measurement and PDF rendering:
+HammerTranslator now uses OFL-licensed defaults installed by
+`hammer-fonts install` into `~/.hammer-translator/fonts/`. New installations do
+not need any files in this directory.
 
-- `SimHei.ttf`
-- `SimSun.ttf`
-- `SimKai.ttf`
+The preserved `manifest.json` here describes the former, locally supplied
+`SimHei.ttf`, `SimSun.ttf`, and `SimKai.ttf` set. These binaries are ignored by
+Git and are **not** part of the public repository or wheel: the local copies do
+not come with permission to redistribute them. Do not commit or copy them to a
+public server without appropriate rights.
 
-The expected SHA-256 hashes are recorded in `manifest.json`. These binaries are
-not included in Git because the locally available files contain third-party
-copyright notices and no redistributable license accompanies this project.
+An operator who has lawfully obtained the exact files pinned in this manifest
+can opt in to the former typography:
 
-Place lawfully obtained copies in this directory, or set
-`HAMMERTRANSLATOR_FONTS_DIR` to another directory containing the same files.
-The Translation and Reflow stages verify each font hash before use, so a silent
-font substitution cannot change layout measurements.
+```bash
+export HAMMERTRANSLATOR_FONTS_DIR="/absolute/path/to/HammerTranslator/assets/fonts"
+hammer-doctor --profile local_mac --backend pipeline --provider deepseek
+```
 
-For the current local development checkout, the files were copied from the
-preserved `external/Colayout-pure/fonts` directory. The active code no longer
-reads that external project.
+The custom directory must contain both `manifest.json` and all three matching
+font files. The same mechanism supports other licensed fonts with a compatible
+manifest. Changing the font set changes layout measurements; do not switch it
+between Translation and Reflow for an active job. Existing translation artifacts
+retain their original font hashes and remain renderable wherever their original
+licensed fonts are still available.

@@ -31,15 +31,15 @@ override is provided.
 | `HAMMERTRANSLATOR_JOBS_ROOT` | Pipeline jobs and uploaded PDFs | `<home>/var/jobs` |
 | `HAMMERTRANSLATOR_CONFIG` | Safe provider/model YAML | packaged default |
 | `HAMMERTRANSLATOR_ENV_FILE` | Local API-key environment file | `<home>/.env` |
-| `HAMMERTRANSLATOR_FONTS_DIR` | Licensed, hash-pinned font binaries | `<home>/fonts` |
+| `HAMMERTRANSLATOR_FONTS_DIR` | Optional custom, hash-pinned font set | `<home>/fonts` |
 | `HAMMERTRANSLATOR_FORMULA_RUNTIME_DIR` | MathJax script, lockfile, and `node_modules` | packaged metadata directory |
 | `HAMMERTRANSLATOR_MODEL_CACHE` | Parser/model cache reserved for deployment | `<home>/models` |
 | `HAMMERTRANSLATOR_TEMP_DIR` | Application temporary files | system temp directory |
 | `HAMMERTRANSLATOR_MINERU_SOURCE` | Optional MinerU source checkout for development | unset; use installed MinerU |
 
-The packaged font manifest, translation configuration, MathJax bridge, and npm
-lockfile are versioned application resources. Licensed font binaries and npm
-dependencies are intentionally not embedded in the wheel.
+The packaged font manifest and OFL notice, translation configuration, MathJax
+bridge, and npm lockfile are versioned application resources. Font binaries and
+npm dependencies are intentionally not embedded in the wheel.
 
 For a non-source deployment, restore MathJax in an operator-owned location and
 point the application to it:
@@ -50,8 +50,9 @@ npm --prefix /srv/hammer-translator/formula_runtime ci --ignore-scripts --no-aud
 export HAMMERTRANSLATOR_FORMULA_RUNTIME_DIR=/srv/hammer-translator/formula_runtime
 ```
 
-Install the verified font files as described in `assets/fonts/README.md` and
-set `HAMMERTRANSLATOR_FONTS_DIR` when they are outside the source checkout.
+Run `hammer-fonts install` once to download and verify the default fonts. To use
+another lawfully obtained set, provide its hash-pinned manifest and binaries
+in one directory and set `HAMMERTRANSLATOR_FONTS_DIR`; see `assets/fonts/README.md`.
 
 ## Preflight
 

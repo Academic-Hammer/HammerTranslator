@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tomllib
 import unittest
 from importlib import import_module
@@ -25,6 +26,7 @@ class PackagingContractTest(unittest.TestCase):
                 "hammer-reflow",
                 "hammer-mineru-adapt",
                 "hammer-doctor",
+                "hammer-fonts",
                 "hammer-smoke",
             },
         )
@@ -42,10 +44,6 @@ class PackagingContractTest(unittest.TestCase):
                 package_resources / "translation_config.yaml",
             ),
             (
-                PROJECT_ROOT / "assets" / "fonts" / "manifest.json",
-                package_resources / "fonts" / "manifest.json",
-            ),
-            (
                 PROJECT_ROOT / "formula_runtime" / "mathjax_to_svg.mjs",
                 package_resources / "formula_runtime" / "mathjax_to_svg.mjs",
             ),
@@ -60,6 +58,16 @@ class PackagingContractTest(unittest.TestCase):
         )
         for source, packaged in pairs:
             self.assertEqual(source.read_bytes(), packaged.read_bytes())
+        font_dir = package_resources / "fonts"
+        manifest = json.loads((font_dir / "manifest.json").read_text(encoding="utf-8"))
+        for filename, record in manifest["fonts"].items():
+            self.assertFalse(record["redistributed"])
+            self.assertEqual(record["license"], "OFL-1.1")
+            self.assertFalse((font_dir / filename).exists())
+            self.assertEqual(len(record["sha256"]), 64)
+            self.assertGreater(record["size_bytes"], 0)
+            self.assertTrue(record["source"].startswith("https://raw.githubusercontent.com/"))
+            self.assertTrue((font_dir / record["license_file"]).is_file())
 
     def test_core_does_not_contain_parser_or_gpu_frameworks(self) -> None:
         pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8").lower()
