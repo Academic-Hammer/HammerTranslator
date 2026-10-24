@@ -7,7 +7,6 @@ otherwise.
 - `scripts/`: superseded one-off parser, provider, converter, and combined
   translation/backfill entry points.
 - `docs/`: instructions tied to superseded scripts or manual model setup.
-- `projects/`: complete historical/reference projects kept locally and ignored
-  by the active repository.
+- `requirements/`: pinned dependency snapshots for legacy freeze workflows.
 
 No file is removed merely because it is classified as legacy.

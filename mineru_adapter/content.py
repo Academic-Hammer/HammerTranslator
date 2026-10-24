@@ -41,6 +41,8 @@ class MiddleJsonConverter:
 
         output: list[dict[str, Any]] = []
         logical_id = 0
+        page_source_texts = [self._page_source_text(value) for value in pages]
+        page_emitted_texts = [self._page_emitted_text(value) for value in pages]
         for fallback_page_idx, page in enumerate(pages):
             if not isinstance(page, dict):
                 self.warnings.append(f"Skipped non-object page at position {fallback_page_idx}")
@@ -48,7 +50,16 @@ class MiddleJsonConverter:
             page_idx = page.get("page_idx", fallback_page_idx)
             blocks = self._ordered_blocks(page, page_idx)
             for block in blocks:
-                split_blocks = self._split_outside_lines(block) if self.options.split_outside_lines else [block]
+                split_blocks = (
+                    self._split_outside_lines(
+                        block,
+                        fallback_page_idx,
+                        page_source_texts,
+                        page_emitted_texts,
+                    )
+                    if self.options.split_outside_lines
+                    else [block]
+                )
                 for split_block in split_blocks:
                     page_offset = int(split_block.pop("_continuation_page_offset", 0))
                     item_page_idx = int(page_idx) + page_offset
@@ -82,7 +93,105 @@ class MiddleJsonConverter:
             self.warnings.append(f"Page {page_idx} contains blocks without an index; bbox order was used as fallback")
         return sorted(blocks, key=key)
 
-    def _split_outside_lines(self, block: dict[str, Any]) -> list[dict[str, Any]]:
+    @staticmethod
+    def _line_text(line: dict[str, Any]) -> str:
+        spans = line.get("spans")
+        if not isinstance(spans, list):
+            return ""
+        return "".join(
+            str(span.get("content") or "")
+            for span in spans
+            if isinstance(span, dict)
+        )
+
+    def _all_page_blocks(self, page: Any) -> list[dict[str, Any]]:
+        if not isinstance(page, dict):
+            return []
+        blocks = [block for block in page.get("para_blocks", []) if isinstance(block, dict)]
+        blocks.extend(
+            block for block in page.get("preproc_blocks", []) if isinstance(block, dict)
+        )
+        if self.options.preserve_discarded:
+            blocks.extend(
+                block
+                for block in page.get("discarded_blocks", [])
+                if isinstance(block, dict)
+            )
+        return blocks
+
+    def _page_source_text(self, page: Any) -> str:
+        """Collect every line MinerU associated with a page, including its preproc copy."""
+
+        return "".join(
+            self._line_text(line)
+            for block in self._all_page_blocks(page)
+            for line in block.get("lines") or []
+            if isinstance(line, dict)
+        )
+
+    def _page_emitted_text(self, page: Any) -> str:
+        """Collect text the converter will emit for a page after line splitting."""
+
+        if not isinstance(page, dict):
+            return ""
+        blocks = [block for block in page.get("para_blocks", []) if isinstance(block, dict)]
+        if self.options.preserve_discarded:
+            blocks.extend(
+                block
+                for block in page.get("discarded_blocks", [])
+                if isinstance(block, dict)
+            )
+        texts: list[str] = []
+        for block in blocks:
+            bbox = copy_bbox(block.get("bbox"))
+            for line in block.get("lines") or []:
+                if not isinstance(line, dict):
+                    continue
+                if bbox is not None and intersection_area(bbox, line.get("bbox")) <= 0:
+                    continue
+                texts.append(self._line_text(line))
+        return "".join(texts)
+
+    @staticmethod
+    def _line_is_cross_page(line: dict[str, Any]) -> bool:
+        spans = line.get("spans")
+        if not isinstance(spans, list):
+            return False
+        marked = [span for span in spans if isinstance(span, dict)]
+        return bool(marked) and any(bool(span.get("cross_page")) for span in marked)
+
+    @staticmethod
+    def _lines_overlap_on_page(first: dict[str, Any], second: dict[str, Any]) -> bool:
+        """Return whether two lines occupy the same page position.
+
+        MinerU sometimes leaves lines from the next page inside the previous
+        page's block bbox.  Those lines overlap the previous page's own lines
+        in both axes, which cannot happen for ordinary single-column text.
+        """
+
+        first_bbox = copy_bbox(first.get("bbox"))
+        second_bbox = copy_bbox(second.get("bbox"))
+        if first_bbox is None or second_bbox is None:
+            return False
+        overlap = intersection_area(first_bbox, second_bbox)
+        if overlap <= 0:
+            return False
+        first_area = (first_bbox[2] - first_bbox[0]) * (first_bbox[3] - first_bbox[1])
+        second_area = (second_bbox[2] - second_bbox[0]) * (second_bbox[3] - second_bbox[1])
+        smaller = min(first_area, second_area)
+        return smaller > 0 and overlap / smaller >= 0.5
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        return "".join(text.split()).casefold()
+
+    def _split_outside_lines(
+        self,
+        block: dict[str, Any],
+        page_position: int = 0,
+        page_source_texts: list[str] | None = None,
+        page_emitted_texts: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         if block.get("type") not in TEXT_TYPES or not isinstance(block.get("lines"), list):
             return [block]
         bbox = copy_bbox(block.get("bbox"))
@@ -90,26 +199,89 @@ class MiddleJsonConverter:
             return [block]
         inside: list[dict[str, Any]] = []
         outside: list[dict[str, Any]] = []
-        for line in block["lines"]:
-            if not isinstance(line, dict):
+        lines = [line for line in block["lines"] if isinstance(line, dict)]
+        current_page_lines = [line for line in lines if not self._line_is_cross_page(line)]
+        displaced_cross_page_lines: list[dict[str, Any]] = []
+        for line in lines:
+            if self._line_is_cross_page(line) and any(
+                self._lines_overlap_on_page(line, current) for current in current_page_lines
+            ):
+                displaced_cross_page_lines.append(line)
                 continue
             target = inside if intersection_area(bbox, line.get("bbox")) > 0 else outside
             target.append(line)
-        if not outside or not inside:
+        if not inside:
+            return [block]
+        if not outside and not displaced_cross_page_lines:
             return [block]
         first = deepcopy(block)
         first["lines"] = inside
-        second = deepcopy(block)
-        second["lines"] = outside
-        second_bbox = union_bbox(line.get("bbox") for line in outside)
-        if second_bbox:
-            second["bbox"] = second_bbox
-        if self._looks_like_next_page(bbox, second_bbox):
-            second["cross_page"] = True
-            second["_continuation_page_offset"] = 1
-        else:
-            second["cross_column"] = True
-        return [first, second]
+        result = [first]
+
+        cross_page_lines = [
+            line
+            for line in outside
+            if self._line_is_cross_page(line)
+        ] + displaced_cross_page_lines
+        remaining = [
+            line
+            for line in outside
+            if not self._line_is_cross_page(line)
+        ]
+        if cross_page_lines:
+            source_texts = page_source_texts or []
+            emitted_texts = page_emitted_texts or []
+            grouped: dict[int, list[dict[str, Any]]] = {}
+            for line in cross_page_lines:
+                needle = self._normalize_text(self._line_text(line))
+                target_position: int | None = None
+                if needle:
+                    for candidate in range(
+                        page_position + 1,
+                        min(len(source_texts), page_position + 4),
+                    ):
+                        if needle in self._normalize_text(source_texts[candidate]):
+                            target_position = candidate
+                            break
+                if target_position is None:
+                    target_position = page_position + 1
+                grouped.setdefault(target_position, []).append(line)
+
+            for target_position, target_lines in sorted(grouped.items()):
+                continuation_text = "".join(
+                    self._line_text(line) for line in target_lines
+                )
+                needle = self._normalize_text(continuation_text)
+                already_emitted = (
+                    target_position < len(emitted_texts)
+                    and needle
+                    and needle in self._normalize_text(emitted_texts[target_position])
+                )
+                if already_emitted:
+                    continue
+                continuation = deepcopy(block)
+                continuation["lines"] = target_lines
+                continuation_bbox = union_bbox(line.get("bbox") for line in target_lines)
+                if continuation_bbox:
+                    continuation["bbox"] = continuation_bbox
+                continuation["cross_page"] = True
+                continuation["_continuation_page_offset"] = (
+                    target_position - page_position
+                )
+                result.append(continuation)
+        if remaining:
+            second = deepcopy(block)
+            second["lines"] = remaining
+            second_bbox = union_bbox(line.get("bbox") for line in remaining)
+            if second_bbox:
+                second["bbox"] = second_bbox
+            if self._looks_like_next_page(bbox, second_bbox):
+                second["cross_page"] = True
+                second["_continuation_page_offset"] = 1
+            else:
+                second["cross_column"] = True
+            result.append(second)
+        return result
 
     @staticmethod
     def _looks_like_next_page(

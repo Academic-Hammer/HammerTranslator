@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
+
+from hammer_translator._hashing import sha256_file
 
 from .executor import (
     PipelineExecutor,
@@ -26,14 +27,6 @@ from .schema import (
     utc_now,
 )
 from .storage import JobStore, PipelineStorageError
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 class PipelineRunner:
@@ -176,7 +169,7 @@ class PipelineRunner:
                     code="declared_artifact_missing",
                 )
             size = path.stat().st_size
-            digest = _sha256(path)
+            digest = sha256_file(path)
         else:
             if not path.is_dir():
                 raise StageExecutionError(

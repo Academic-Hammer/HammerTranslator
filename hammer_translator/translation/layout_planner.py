@@ -25,7 +25,7 @@ from .layout import (
 )
 from .protection import ProtectionError, STANDARD_PATTERNS
 from .provider import ProviderError, ProviderResponse, TranslationProvider, TranslationRequest
-from .quality import QualityReport, evaluate_translation
+from .quality import QualityReport, evaluate_translation, strip_prompt_wrapper
 from .runner import RunnerConfig, RunnerResult
 from .taxonomy import TranslationPolicy
 from .units import TranslationPlan, TranslationUnit
@@ -40,6 +40,9 @@ WEAK_BREAKS = set("，,.")
 OPENING_PUNCTUATION = set("（([{【《“‘")
 CLOSING_PUNCTUATION = set("）)]}】》”’，。！？；：,.!?;:")
 VISIBLE_RE = re.compile(r"\s+")
+
+SOURCE_FONT_CAP_RATIO = 1.08
+TIGHT_BBOX_HEIGHT_RATIO = 1.30
 
 
 def _utc_now() -> str:
@@ -61,6 +64,74 @@ def _rounded_range(start: float, stop: float, step: float) -> tuple[float, ...]:
     if not math.isclose(values[-1], stop, abs_tol=1e-7):
         values.append(stop)
     return tuple(dict.fromkeys(round(item, 6) for item in values))
+
+
+def _source_font_size(block: Any) -> float | None:
+    """Return a text-length-weighted source font size for one block."""
+
+    raw = getattr(block, "raw", None) or {}
+    spans = raw.get("rich_spans")
+    if not isinstance(spans, list):
+        return None
+    samples: list[tuple[float, int]] = []
+    for span in spans:
+        if not isinstance(span, dict):
+            continue
+        text = str(span.get("text") or span.get("content") or "")
+        try:
+            size = float(span.get("size") or 0)
+        except (TypeError, ValueError):
+            continue
+        if 3.0 <= size <= 72.0 and text.strip():
+            samples.append((size, max(1, len("".join(text.split())))))
+    if not samples:
+        return None
+    samples.sort()
+    threshold = sum(weight for _, weight in samples) / 2
+    cumulative = 0
+    for size, weight in samples:
+        cumulative += weight
+        if cumulative >= threshold:
+            return size
+    return samples[-1][0]
+
+
+def _block_style_bounds(
+    metrics: LayoutMetrics,
+    role: str,
+    block: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Cap role-level typography by the block's measured source size."""
+
+    golden, guardrails = metrics.style_for_role(role)
+    source_size = _source_font_size(block)
+    if source_size is None:
+        return golden, guardrails
+    bbox = getattr(getattr(block, "data", None), "bbox", None)
+    height = float(bbox[3]) - float(bbox[1]) if bbox and len(bbox) == 4 else 0.0
+    tight = height > 0 and height <= source_size * TIGHT_BBOX_HEIGHT_RATIO
+    cap = source_size * (1.0 if tight else SOURCE_FONT_CAP_RATIO)
+    if cap >= float(golden["font_size_pt"]) - 1e-6:
+        return golden, guardrails
+    font_guardrails = dict(guardrails.get("font_size_pt") or {})
+    shrink = float(font_guardrails.get("max_shrink_ratio", 0.1))
+    font_guardrails.update(
+        max=round(cap, 3),
+        min=round(cap * (1.0 - shrink), 3),
+    )
+    line_guardrails = dict(guardrails.get("line_height_multiplier") or {})
+    raw = getattr(block, "raw", None) or {}
+    raw_lines = raw.get("lines") if isinstance(raw, dict) else None
+    single_line = not isinstance(raw_lines, list) or len(raw_lines) <= 1
+    if tight:
+        line_guardrails["min"] = round(
+            min(float(line_guardrails.get("min", 1.0)), 1.0 if single_line else 1.05),
+            4,
+        )
+    return (
+        {**golden, "font_size_pt": round(cap, 3)},
+        {**guardrails, "font_size_pt": font_guardrails, "line_height_multiplier": line_guardrails},
+    )
 
 
 @dataclass(frozen=True)
@@ -287,11 +358,12 @@ def optimize_style(
     role: str,
     config: LayoutSearchConfig | None = None,
     formula_runs: tuple[FormulaRunSpec, ...] = (),
+    style_bounds: tuple[dict[str, Any], dict[str, Any]] | None = None,
 ) -> StyleOptimization:
     """Return the globally best feasible style using exact branch-and-bound."""
 
     settings = config or LayoutSearchConfig()
-    golden, guardrails = metrics.style_for_role(role)
+    golden, guardrails = style_bounds or metrics.style_for_role(role)
     font_values = _rounded_range(
         golden["font_size_pt"], guardrails["font_size_pt"]["min"], settings.font_size_step_pt
     )
@@ -317,6 +389,7 @@ def optimize_style(
             bbox_values,
             role=role,
             style=golden,
+            enforce_guardrails=style_bounds is None,
             formula_runs=formula_runs,
         )
         evaluated = 1
@@ -388,6 +461,7 @@ def optimize_style(
                 bbox_values,
                 role=role,
                 style=wrapping_style,
+                enforce_guardrails=style_bounds is None,
                 formula_runs=formula_runs,
             )
         )
@@ -689,15 +763,37 @@ def _retranslation_constraints(
     role: str,
     segments: tuple[BlockAllocation, ...],
     protected_values: Iterable[str],
+    metrics: LayoutMetrics,
     config: LayoutSearchConfig,
 ) -> dict[str, Any]:
     protected_values = tuple(protected_values)
     capacity = sum(segment.optimization.measurement.estimated_cjk_capacity for segment in segments)
-    raw_target = max(0, math.floor(capacity * config.capacity_safety_ratio))
-    target = max(1, raw_target)
+    protected_capacity = 0
+    for segment in segments:
+        measurement = segment.optimization.measurement
+        formula_width = sum(
+            run.width_pt
+            for line in measurement.mixed_lines
+            for run in line.runs
+            if run.kind == "formula"
+        )
+        if formula_width <= 0:
+            continue
+        style = {
+            "font_id": measurement.font_id,
+            "font_size_pt": measurement.font_size_pt,
+            "line_height_multiplier": measurement.line_height_multiplier,
+            "char_spacing_em": measurement.char_spacing_em,
+        }
+        cjk_width = metrics.cjk_character_width(style)
+        protected_capacity += math.floor(formula_width / max(cjk_width, 1e-9))
+    translatable_capacity = max(0, capacity - protected_capacity)
+    raw_target = max(0, math.floor(translatable_capacity * config.capacity_safety_ratio))
+    target = max(1, raw_target) if translatable_capacity > 0 else 0
     visible = len(VISIBLE_RE.sub("", text))
     protected_visible = sum(len(VISIBLE_RE.sub("", value)) for value in protected_values)
-    ratio = max(0.0, 1.0 - target / max(visible, 1))
+    translatable_visible = max(0, visible - protected_visible)
+    ratio = max(0.0, 1.0 - target / max(translatable_visible, 1))
     overflow_height = sum(
         segment.optimization.measurement.overflow_height_pt for segment in segments
     )
@@ -720,9 +816,8 @@ def _retranslation_constraints(
     elif zero_line_capacity:
         impossibility_reason = "minimum_allowed_line_height_exceeds_bbox"
     retranslation_possible = bool(
-        raw_target > 0
-        and target < visible
-        and target >= protected_visible
+        target > 0
+        and target < translatable_visible
         and not protected_only_overflow
         and not zero_line_capacity
     )
@@ -732,6 +827,9 @@ def _retranslation_constraints(
         "current_visible_characters": visible,
         "target_max_characters": target,
         "protected_visible_characters": protected_visible,
+        "translatable_visible_characters": translatable_visible,
+        "protected_capacity_characters": protected_capacity,
+        "translatable_capacity_characters": translatable_capacity,
         "required_reduction_ratio": round(ratio, 4),
         "overflow_height_pt": round(overflow_height, 4),
         "overflow_width_pt": round(overflow_width, 4),
@@ -806,12 +904,18 @@ def allocate_unit_text(
             role=role,
             config=settings,
             formula_runs=formula_runs,
+            style_bounds=_block_style_bounds(metrics, role, blocks[0]),
         )
         segment = BlockAllocation(blocks[0].block_id, text, optimization)
         constraints = None
         if not optimization.measurement.fits:
             constraints = _retranslation_constraints(
-                text, role, (segment,), (token.original for token in unit.protected_tokens), settings
+                text,
+                role,
+                (segment,),
+                (token.original for token in unit.protected_tokens),
+                metrics,
+                settings,
             )
         return UnitAllocation(
             status=optimization.status,
@@ -824,10 +928,16 @@ def allocate_unit_text(
         )
 
     effective_capacities: list[int] = []
-    capacity_style, _ = metrics.style_for_role(role)
     for block in blocks:
+        capacity_style, _ = _block_style_bounds(metrics, role, block)
         effective_capacities.append(
-            metrics.measure(text[:1] or "汉", block.data.bbox, role=role, style=capacity_style)
+            metrics.measure(
+                text[:1] or "汉",
+                block.data.bbox,
+                role=role,
+                style=capacity_style,
+                enforce_guardrails=False,
+            )
             .estimated_cjk_capacity
         )
     cuts_to_try = _candidate_cut_sets(
@@ -844,7 +954,7 @@ def allocate_unit_text(
         tuple[Any, ...], tuple[int, ...], tuple[BlockAllocation, ...]
     ] | None = None
     optimization_cache: dict[
-        tuple[str, tuple[float, ...], tuple[FormulaRunSpec, ...]], StyleOptimization
+        tuple[str, str, tuple[float, ...], tuple[FormulaRunSpec, ...]], StyleOptimization
     ] = {}
 
     def optimize_segment(
@@ -855,6 +965,7 @@ def allocate_unit_text(
     ) -> StyleOptimization:
         segment_formulas = _formula_specs_for_segment(formula_runs, start, end)
         cache_key = (
+            block.block_id,
             part,
             tuple(float(value) for value in block.data.bbox),
             segment_formulas,
@@ -868,6 +979,7 @@ def allocate_unit_text(
             role=role,
             config=settings,
             formula_runs=segment_formulas,
+            style_bounds=_block_style_bounds(metrics, role, block),
         )
         if settings.exact_allocation_pruning:
             optimization_cache[cache_key] = optimization
@@ -961,6 +1073,7 @@ def allocate_unit_text(
                         0 if index == 0 else len(text),
                         len(text),
                     ),
+                    style_bounds=_block_style_bounds(metrics, role, block),
                 ),
             )
             for index, (block, part) in enumerate(zip(blocks, parts, strict=True))
@@ -969,7 +1082,12 @@ def allocate_unit_text(
     else:
         _, cuts, allocations = best_overflow
     constraints = _retranslation_constraints(
-        text, role, allocations, (token.original for token in unit.protected_tokens), settings
+        text,
+        role,
+        allocations,
+        (token.original for token in unit.protected_tokens),
+        metrics,
+        settings,
     )
     return UnitAllocation(
         status="requires_retranslation",
@@ -1042,10 +1160,11 @@ def _candidate_from_response(
     simulation: bool,
     ordinal: int,
 ) -> AcceptedCandidate:
-    restored = unit.restore_protected_content(response.text)
+    response_text = strip_prompt_wrapper(response.text)
+    restored = unit.restore_protected_content(response_text, order_policy="typed")
     quality = evaluate_translation(
         unit.protected_text,
-        response.text,
+        response_text,
         target_language=request.target_language,
         simulation=simulation,
     )

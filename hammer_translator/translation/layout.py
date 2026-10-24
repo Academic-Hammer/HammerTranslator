@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -20,13 +21,103 @@ class LayoutMetricError(ValueError):
 LAYOUT_METRICS_VERSION = "layout-metrics-v2"
 SUPPORTED_LAYOUT_METRICS_VERSIONS = {"layout-metrics-v1", LAYOUT_METRICS_VERSION}
 MATHJAX_EX_TO_EM = 0.5
+LAYOUT_FIT_TOLERANCE_PT = 0.75
 
 
 TOKEN_PATTERN = re.compile(
     r"\n|(?<!\\)\$(?:\\.|[^$\n])+(?<!\\)\$|\s+|"
     r"[A-Za-z0-9]+(?:[-_/][A-Za-z0-9]+)*|[\u3400-\u4dbf\u4e00-\u9fff]|."
 )
+NO_LINE_START_PUNCTUATION = frozenset("、。，．；：？！）〕］｝〉》」』】’”…‥·ー々ゝゞ")
 DEFAULT_MEASUREMENT_CACHE_MAX_ENTRIES = 50_000
+
+
+def _line_break_suffix(text: str) -> str:
+    """Return the trailing unit to keep with a closing punctuation mark."""
+
+    stripped = text.rstrip()
+    if not stripped:
+        return ""
+    last = stripped[-1]
+    if "\u3400" <= last <= "\u9fff":
+        return last
+    if last.isascii() and last.isalnum():
+        index = len(stripped) - 1
+        while index > 0 and stripped[index - 1].isascii() and (
+            stripped[index - 1].isalnum() or stripped[index - 1] in "-_/"
+        ):
+            index -= 1
+        return stripped[index:]
+    return ""
+
+
+_RESIDUAL_LATEX_SYMBOLS = {
+    "alpha": "α",
+    "beta": "β",
+    "gamma": "γ",
+    "delta": "δ",
+    "epsilon": "ϵ",
+    "eta": "η",
+    "theta": "θ",
+    "lambda": "λ",
+    "mu": "μ",
+    "rho": "ρ",
+    "sigma": "σ",
+    "tau": "τ",
+    "phi": "φ",
+    "psi": "ψ",
+    "omega": "ω",
+    "odot": "⊙",
+    "times": "×",
+    "approx": "≈",
+    "equiv": "≡",
+    "le": "≤",
+    "leq": "≤",
+    "ge": "≥",
+    "geq": "≥",
+    "pm": "±",
+    "infty": "∞",
+}
+_RESIDUAL_LATEX_FORMATTING = {
+    "mathrm",
+    "mathit",
+    "mathbf",
+    "text",
+    "left",
+    "right",
+    "big",
+    "Big",
+    "bigg",
+    "Bigg",
+    "displaystyle",
+}
+
+
+def _plain_latex_residue(text: str) -> str:
+    """Render malformed LaTeX fragments as readable text instead of source code."""
+
+    if "\\" not in text and "$" not in text:
+        return text
+    plain = text.replace("$", " ")
+    plain = re.sub(
+        r"\\frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}",
+        lambda match: f"{match.group(1)}/{match.group(2)}",
+        plain,
+    )
+    plain = re.sub(
+        r"\\([A-Za-z]+)",
+        lambda match: (
+            ""
+            if match.group(1) in _RESIDUAL_LATEX_FORMATTING
+            else _RESIDUAL_LATEX_SYMBOLS.get(match.group(1), match.group(1))
+        ),
+        plain,
+    )
+    plain = plain.replace("{", "").replace("}", "")
+    plain = re.sub(r"\s*_\s*", "_", plain)
+    plain = re.sub(r"\s*\^\s*", "^", plain)
+    plain = unicodedata.normalize("NFKC", plain)
+    return re.sub(r"\s+", " ", plain).strip()
 
 
 @dataclass(frozen=True)
@@ -268,6 +359,17 @@ class LayoutMetrics:
             raise LayoutMetricError(f"invalid style profile for role: {role}")
         return dict(style), dict(guardrails)
 
+    def cjk_character_width(self, style: dict[str, Any]) -> float:
+        """Return one CJK advance in points for the given style."""
+
+        font_id, font_size, _, char_spacing_em = self._validate_style(style)
+        font = self._font(font_id)
+        return max(
+            0.001,
+            float(font.text_length("汉", fontsize=font_size))
+            + char_spacing_em * font_size,
+        )
+
     def _font(self, font_id: str) -> fitz.Font:
         if font_id in self._font_cache:
             return self._font_cache[font_id]
@@ -459,6 +561,17 @@ class LayoutMetrics:
                 pending_space = False
                 continue
 
+            if token in NO_LINE_START_PUNCTUATION:
+                suffix = _line_break_suffix(current)
+                if suffix and len(suffix) < len(current):
+                    current = current[: -len(suffix)]
+                    push()
+                    current = suffix + token
+                    pending_space = False
+                    continue
+                current += token
+                pending_space = False
+                continue
             push()
             token_width = self._text_width(
                 font,
@@ -544,11 +657,11 @@ class LayoutMetrics:
         for spec in ordered:
             if spec.start < cursor or spec.end > len(text) or text[spec.start : spec.end] != spec.text:
                 raise LayoutMetricError(f"formula run {spec.formula_id} does not match measured text")
-            for token in self._tokens(text[cursor : spec.start]):
+            for token in self._tokens(_plain_latex_residue(text[cursor : spec.start])):
                 atoms.append(("text", token))
             atoms.append(("formula", spec))
             cursor = spec.end
-        for token in self._tokens(text[cursor:]):
+        for token in self._tokens(_plain_latex_residue(text[cursor:])):
             atoms.append(("text", token))
 
         raw_lines: list[list[dict[str, Any]]] = []
@@ -614,6 +727,36 @@ class LayoutMetrics:
                 current.append({"kind": "text", "text": value, "width": merged_width})
             current_width += increment
 
+        def take_last_text_suffix() -> str:
+            nonlocal current_width
+            if not current or current[-1]["kind"] != "text":
+                return ""
+            run = current[-1]
+            text = str(run["text"]).rstrip()
+            if not text:
+                return ""
+            suffix = _line_break_suffix(text)
+            if not suffix:
+                return ""
+            remaining = text[: len(text) - len(suffix)]
+            if not remaining and len(current) == 1:
+                return ""
+            old_width = float(run["width"])
+            new_width = self._text_width(
+                font,
+                remaining,
+                font_size=font_size,
+                char_spacing_em=char_spacing_em,
+            )
+            if remaining:
+                run["text"] = remaining
+                run["width"] = new_width
+                current_width -= old_width - new_width
+            else:
+                current.pop()
+                current_width -= old_width
+            return suffix
+
         for kind, value in atoms:
             if kind == "text":
                 token = str(value)
@@ -627,6 +770,17 @@ class LayoutMetrics:
                 proposed = prefix + token
                 increment, _ = text_increment(proposed)
                 if current and current_width + increment > available_width:
+                    if token in NO_LINE_START_PUNCTUATION:
+                        suffix = take_last_text_suffix()
+                        if suffix:
+                            push()
+                            append_text(suffix)
+                            append_text(token)
+                            pending_space = False
+                            continue
+                        append_text(proposed)
+                        pending_space = False
+                        continue
                     push()
                     proposed = token
                 token_width = self._text_width(
@@ -763,7 +917,7 @@ class LayoutMetrics:
             if formula_runs:
                 raise LayoutMetricError("layout-metrics-v1 cannot measure formula runs")
             lines, widths = self._wrap(
-                text,
+                _plain_latex_residue(text),
                 font=font,
                 font_size=font_size,
                 char_spacing_em=char_spacing_em,
@@ -773,7 +927,7 @@ class LayoutMetrics:
             line_heights = [font_size * line_height_multiplier for _ in lines]
         elif not formula_runs:
             lines, widths = self._wrap(
-                text,
+                _plain_latex_residue(text),
                 font=font,
                 font_size=font_size,
                 char_spacing_em=char_spacing_em,
@@ -822,7 +976,10 @@ class LayoutMetrics:
         used_height = sum(line_heights) if text else 0.0
         overflow_width = max(0.0, used_width - available_width)
         overflow_height = max(0.0, used_height - available_height)
-        fits = overflow_width <= 1e-6 and overflow_height <= 1e-6
+        fits = (
+            overflow_width <= LAYOUT_FIT_TOLERANCE_PT
+            and overflow_height <= LAYOUT_FIT_TOLERANCE_PT
+        )
         width_ratio = used_width / available_width if available_width else 0.0
         height_ratio = used_height / available_height if available_height else 0.0
         used_area = sum(width * height for width, height in zip(widths, line_heights, strict=True))
@@ -831,6 +988,8 @@ class LayoutMetrics:
         cjk_width += char_spacing_em * font_size
         chars_per_line = max(1, math.floor(available_width / max(cjk_width, 0.001)))
         max_lines = max(0, math.floor(available_height / max(line_height_pt, 0.001)))
+        if fits and max_lines == 0:
+            max_lines = 1
         return LayoutResult(
             fits=fits,
             is_overflow=not fits,
@@ -911,7 +1070,10 @@ class LayoutMetrics:
             used_height = sum(line.height_pt for line in mixed_lines) if base.lines else 0.0
             line_height_pt = base_height
         overflow_height = max(0.0, used_height - base.available_height_pt)
-        fits = base.overflow_width_pt <= 1e-6 and overflow_height <= 1e-6
+        fits = (
+            base.overflow_width_pt <= LAYOUT_FIT_TOLERANCE_PT
+            and overflow_height <= LAYOUT_FIT_TOLERANCE_PT
+        )
         available_area = base.available_width_pt * base.available_height_pt
         if mixed_lines:
             used_area = sum(line.width_pt * line.height_pt for line in mixed_lines)
@@ -920,12 +1082,16 @@ class LayoutMetrics:
         base_max_lines = max(
             0, math.floor(base.available_height_pt / max(base.line_height_pt, 0.001))
         )
+        if base.fits and base_max_lines == 0:
+            base_max_lines = 1
         chars_per_line = (
             max(1, base.estimated_cjk_capacity // base_max_lines)
             if base_max_lines
             else max(1, base.estimated_cjk_capacity)
         )
         max_lines = max(0, math.floor(base.available_height_pt / max(line_height_pt, 0.001)))
+        if fits and max_lines == 0:
+            max_lines = 1
         return replace(
             base,
             fits=fits,

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
+import logging
 from pathlib import Path
 from typing import Sequence
 
+from hammer_translator._logging import configure_cli_logging
 from hammer_translator.parsing import default_environment_profile
 from hammer_translator.runtime_paths import runtime_paths
 
@@ -23,6 +24,7 @@ from .validation_executor import PDFValidationStageExecutor
 
 
 DEFAULT_JOBS_ROOT = runtime_paths().jobs_root
+LOGGER = logging.getLogger("hammer-translator")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -170,6 +172,7 @@ def _print(value) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_cli_logging()
     args = build_parser().parse_args(argv)
     store = LocalJobStore(args.jobs_root)
     runner = PipelineRunner(store, FakePipelineExecutor())
@@ -200,19 +203,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             job = store.create_job(args.pdf, config=config)
             if not args.simulate:
-                print(
-                    f"[{job.job_id}] queued real local pipeline",
-                    file=sys.stderr,
-                    flush=True,
-                )
+                LOGGER.info("[%s] queued real local pipeline", job.job_id)
             execution = (
                 FakePipelineExecutor()
                 if args.simulate
                 else LocalPipelineExecutor(
-                    progress_sink=lambda message: print(
-                        f"[{job.job_id}] {message}",
-                        file=sys.stderr,
-                        flush=True,
+                    progress_sink=lambda message, _jid=job.job_id: LOGGER.info(
+                        "[%s] %s", _jid, message
                     )
                 )
             )
@@ -245,27 +242,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 translation_request_timeout_seconds=args.request_timeout,
             )
             job = store.create_job(args.pdf, config=config)
-            print(
-                f"[{job.job_id}] queued real MinerU parsing ({args.environment_profile})",
-                file=sys.stderr,
-                flush=True,
+            LOGGER.info(
+                "[%s] queued real MinerU parsing (%s)", job.job_id, args.environment_profile
             )
             real_runner = PipelineRunner(
                 store,
                 MinerUParsingExecutor(
-                    progress_sink=lambda message: print(
-                        f"[{job.job_id}] {message}",
-                        file=sys.stderr,
-                        flush=True,
+                    progress_sink=lambda message, _jid=job.job_id: LOGGER.info(
+                        "[%s] %s", _jid, message
                     )
                 ),
             )
             result = real_runner.run_stage(job.job_id, PipelineStage.PARSING)
-            print(
-                f"[{job.job_id}] parsing stage: "
-                f"{result.stage_record(PipelineStage.PARSING).status.value}",
-                file=sys.stderr,
-                flush=True,
+            LOGGER.info(
+                "[%s] parsing stage: %s",
+                job.job_id,
+                result.stage_record(PipelineStage.PARSING).status.value,
             )
             _print(result.model_dump(mode="json"))
             parse_status = result.stage_record(PipelineStage.PARSING).status
@@ -274,19 +266,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 StageStatus.COMPLETED_WITH_WARNINGS,
             } else 1
         if args.command == "translate":
-            print(
-                f"[{args.job_id}] queued Translation Stage",
-                file=sys.stderr,
-                flush=True,
-            )
+            LOGGER.info("[%s] queued Translation Stage", args.job_id)
             translation_runner = PipelineRunner(
                 store,
                 TranslationStageExecutor(
                     simulate=args.simulate,
-                    progress_sink=lambda message: print(
-                        f"[{args.job_id}] {message}",
-                        file=sys.stderr,
-                        flush=True,
+                    progress_sink=lambda message, _jid=args.job_id: LOGGER.info(
+                        "[%s] %s", _jid, message
                     ),
                 ),
             )
@@ -295,11 +281,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 PipelineStage.TRANSLATING,
                 retry_failed=args.retry_failed,
             )
-            print(
-                f"[{args.job_id}] translation stage: "
-                f"{result.stage_record(PipelineStage.TRANSLATING).status.value}",
-                file=sys.stderr,
-                flush=True,
+            LOGGER.info(
+                "[%s] translation stage: %s",
+                args.job_id,
+                result.stage_record(PipelineStage.TRANSLATING).status.value,
             )
             _print(result.model_dump(mode="json"))
             translation_status = result.stage_record(PipelineStage.TRANSLATING).status
@@ -308,18 +293,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 StageStatus.COMPLETED_WITH_WARNINGS,
             } else 1
         if args.command == "reflow":
-            print(
-                f"[{args.job_id}] queued Reflow Stage",
-                file=sys.stderr,
-                flush=True,
-            )
+            LOGGER.info("[%s] queued Reflow Stage", args.job_id)
             reflow_runner = PipelineRunner(
                 store,
                 ReflowStageExecutor(
-                    progress_sink=lambda message: print(
-                        f"[{args.job_id}] {message}",
-                        file=sys.stderr,
-                        flush=True,
+                    progress_sink=lambda message, _jid=args.job_id: LOGGER.info(
+                        "[%s] %s", _jid, message
                     ),
                 ),
             )
@@ -328,11 +307,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 PipelineStage.REFLOWING,
                 retry_failed=args.retry_failed,
             )
-            print(
-                f"[{args.job_id}] reflow stage: "
-                f"{result.stage_record(PipelineStage.REFLOWING).status.value}",
-                file=sys.stderr,
-                flush=True,
+            LOGGER.info(
+                "[%s] reflow stage: %s",
+                args.job_id,
+                result.stage_record(PipelineStage.REFLOWING).status.value,
             )
             _print(result.model_dump(mode="json"))
             reflow_status = result.stage_record(PipelineStage.REFLOWING).status
@@ -341,22 +319,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 StageStatus.COMPLETED_WITH_WARNINGS,
             } else 1
         if args.command == "validate":
-            print(
-                f"[{args.job_id}] queued final PDF validation",
-                file=sys.stderr,
-                flush=True,
-            )
+            LOGGER.info("[%s] queued final PDF validation", args.job_id)
             validation_runner = PipelineRunner(store, PDFValidationStageExecutor())
             result = validation_runner.run_stage(
                 args.job_id,
                 PipelineStage.VALIDATING,
                 retry_failed=args.retry_failed,
             )
-            print(
-                f"[{args.job_id}] validation stage: "
-                f"{result.stage_record(PipelineStage.VALIDATING).status.value}",
-                file=sys.stderr,
-                flush=True,
+            LOGGER.info(
+                "[%s] validation stage: %s",
+                args.job_id,
+                result.stage_record(PipelineStage.VALIDATING).status.value,
             )
             _print(result.model_dump(mode="json"))
             validation_status = result.stage_record(PipelineStage.VALIDATING).status
@@ -389,10 +362,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 FakePipelineExecutor()
                 if args.simulate
                 else LocalPipelineExecutor(
-                    progress_sink=lambda message: print(
-                        f"[{args.job_id}] {message}",
-                        file=sys.stderr,
-                        flush=True,
+                    progress_sink=lambda message, _jid=args.job_id: LOGGER.info(
+                        "[%s] %s", _jid, message
                     )
                 )
             )
@@ -405,6 +376,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 JobStatus.COMPLETED_WITH_WARNINGS,
             } else 1
     except (OSError, ValueError, PipelineStorageError) as exc:
-        print(f"pipeline error: {exc}", file=sys.stderr)
+        LOGGER.error("pipeline error: %s", exc)
         return 2
     raise AssertionError("unreachable pipeline command")

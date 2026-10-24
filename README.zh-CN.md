@@ -124,6 +124,7 @@ hammer-translator --jobs-root var/jobs resume JOB_ID --run
 
 ## 进一步了解
 
+- [项目交接说明](HANDOVER.md)
 - [运行路径与环境变量](docs/RUNTIME_CONFIGURATION.md)
 - [Linux/NVIDIA 部署细节](docs/LINUX_GPU_RUNTIME.md)
 - [Pipeline 阶段与产物契约](PIPELINE_V1.md)

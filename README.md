@@ -130,6 +130,7 @@ For a successful job, the translated PDF is `var/jobs/JOB_ID/output/translated.p
 
 ## More documentation
 
+- [Project handover notes](HANDOVER.md) (Chinese)
 - [Runtime paths and overrides](docs/RUNTIME_CONFIGURATION.md)
 - [Linux/NVIDIA deployment details](docs/LINUX_GPU_RUNTIME.md)
 - [Pipeline stages and artifact contracts](PIPELINE_V1.md)

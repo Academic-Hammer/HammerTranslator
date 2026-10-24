@@ -14,6 +14,8 @@ from hammer_translator.translation.cache import TranslationCache
 from hammer_translator.translation.layout import LayoutMetrics
 from hammer_translator.translation.layout_planner import (
     LayoutSearchConfig,
+    _block_style_bounds,
+    _candidate_from_response,
     _candidate_cut_sets,
     _capacity_target_tolerance,
     _capacity_targets,
@@ -25,7 +27,11 @@ from hammer_translator.translation.layout_planner import (
     plan_translation_layout,
 )
 from hammer_translator.translation.loader import DiscoveredInput, load_document
-from hammer_translator.translation.provider import FakeProvider
+from hammer_translator.translation.provider import (
+    FakeProvider,
+    ProviderResponse,
+    TranslationRequest,
+)
 from hammer_translator.translation.runner import RunnerConfig, execute_translation_plan
 from hammer_translator.translation.style import build_golden_style_profile
 from hammer_translator.translation.units import build_translation_plan
@@ -42,8 +48,15 @@ def _make_plan(root: Path, blocks: list[dict]):
     return build_translation_plan(document)
 
 
-def _block(index: int, text: str, bbox: list[float], *, logical_id: int = 7) -> dict:
-    return {
+def _block(
+    index: int,
+    text: str,
+    bbox: list[float],
+    *,
+    logical_id: int = 7,
+    **extra,
+) -> dict:
+    value = {
         "type": "text",
         "text": text,
         "context": "First source sentence. Second source sentence.",
@@ -62,9 +75,78 @@ def _block(index: int, text: str, bbox: list[float], *, logical_id: int = 7) -> 
         ],
         "lines": [{"bbox": bbox}],
     }
+    value.update(extra)
+    return value
 
 
 class BoundedStyleOptimizerTests(unittest.TestCase):
+    def test_small_heading_is_capped_by_its_measured_source_font(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            large_heading = _block(
+                0,
+                "A long section heading used to raise the role size",
+                [10, 10, 250, 40],
+                logical_id=7,
+                text_level=2,
+                sub_type="title",
+            )
+            large_heading["rich_spans"] = [
+                {
+                    "text": large_heading["text"],
+                    "size": 14.0,
+                    "font": "Times-Bold",
+                    "flags": 16,
+                    "color": 0,
+                    "bbox": large_heading["bbox"],
+                }
+            ]
+            small_heading = _block(
+                1,
+                "Abstract",
+                [200, 254, 244, 265],
+                logical_id=8,
+                text_level=2,
+                sub_type="title",
+            )
+            small_heading["rich_spans"] = [
+                {
+                    "text": "Abstract",
+                    "size": 8.966,
+                    "font": "Times-Bold",
+                    "flags": 16,
+                    "color": 0,
+                    "bbox": small_heading["bbox"],
+                }
+            ]
+            plan = _make_plan(root, [large_heading, small_heading])
+            profile = build_golden_style_profile(plan)
+            metrics = LayoutMetrics(profile)
+            small_block = next(
+                block for block in plan.document.blocks if block.data.text == "Abstract"
+            )
+            unit = next(
+                unit for unit in plan.units if unit.source_text == "Abstract"
+            )
+            role = "section_header_l1"
+            golden, _ = metrics.style_for_role(role)
+            capped, guardrails = _block_style_bounds(metrics, role, small_block)
+            self.assertEqual(golden["font_size_pt"], 14.0)
+            self.assertEqual(capped["font_size_pt"], 8.966)
+            self.assertEqual(guardrails["line_height_multiplier"]["min"], 1.0)
+
+            outcome = allocate_unit_text(
+                unit,
+                "摘要",
+                blocks=[small_block],
+                role=role,
+                metrics=metrics,
+            )
+            self.assertTrue(outcome.all_blocks_fit)
+            self.assertLessEqual(
+                outcome.segments[0].optimization.style["font_size_pt"], 8.966
+            )
+
     def test_zero_score_golden_fit_stops_at_proven_global_optimum(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -423,6 +505,48 @@ class TranslationAllocationTests(unittest.TestCase):
             self.assertEqual(translation["status"], "needs_review")
             self.assertEqual(translation["selected_text"], "简短译文")
             self.assertEqual(artifact["items"][0]["translated"], "简短译文")
+
+
+class ConstrainedRetranslationTests(unittest.TestCase):
+    def test_candidate_strips_prompt_wrapper_before_acceptance(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plan = _make_plan(
+                Path(temp_dir),
+                [_block(0, "Translate me", [10, 10, 70, 28])],
+            )
+            unit = plan.units[0]
+            request = TranslationRequest(
+                translation_unit_id=unit.translation_unit_id,
+                protected_text=unit.protected_text,
+                source_language="en",
+                target_language="zh-CN",
+                element_type=unit.element_type.value,
+                provider="fake",
+                model="fake-v1",
+                prompt_version="translation-prompt-v2",
+                glossary_version="none",
+                mode="constrained",
+                constraints={"reason": "fixed_bbox_overflow"},
+            )
+            response = ProviderResponse(
+                text=(
+                    "元素类型：文本。\n"
+                    "源语言：英语。\n"
+                    "目标语言：简体中文。\n"
+                    "在定界符之间翻译源文本。\n"
+                    "<源文本>这是一段简短的中文译文。</源文本>"
+                ),
+                provider="fake",
+                model="fake-v1",
+            )
+            candidate = _candidate_from_response(
+                unit,
+                request,
+                response,
+                simulation=False,
+                ordinal=1,
+            )
+            self.assertEqual(candidate.text, "这是一段简短的中文译文。")
 
 
 if __name__ == "__main__":

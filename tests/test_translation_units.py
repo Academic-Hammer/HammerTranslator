@@ -9,7 +9,11 @@ from pathlib import Path
 import fitz
 
 from hammer_translator.translation.loader import DiscoveredInput, load_document
-from hammer_translator.translation.protection import ContentProtector, ProtectionError
+from hammer_translator.translation.protection import (
+    ContentProtector,
+    ProtectionError,
+    mask_protected_tokens,
+)
 from hammer_translator.translation.taxonomy import ElementType, TranslationPolicy
 from hammer_translator.translation.units import build_translation_plan
 
@@ -64,6 +68,32 @@ class ContentProtectionTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtectionError, "order"):
             result.restore(swapped)
 
+    def test_typed_order_policy_allows_non_positional_reordering(self):
+        result = ContentProtector().protect("Let $x$ denote (Smith et al., 2024).")
+        formula = next(token for token in result.tokens if token.kind == "latex_inline")
+        citation = next(
+            token for token in result.tokens if token.kind == "author_year_citation"
+        )
+        reordered = (
+            result.protected_text.replace(formula.placeholder, "TEMP")
+            .replace(citation.placeholder, formula.placeholder)
+            .replace("TEMP", citation.placeholder)
+        )
+        restored = result.restore(reordered, order_policy="typed")
+        self.assertIn(formula.original, restored)
+        self.assertIn(citation.original, restored)
+
+    def test_typed_order_policy_still_rejects_formula_reordering(self):
+        result = ContentProtector().protect("$a$ and $b$")
+        first, second = (token.placeholder for token in result.tokens)
+        swapped = (
+            result.protected_text.replace(first, "TEMP")
+            .replace(second, first)
+            .replace("TEMP", second)
+        )
+        with self.assertRaisesRegex(ProtectionError, "order"):
+            result.restore(swapped, order_policy="typed")
+
     def test_table_mode_protects_markup_numbers_and_statistics(self):
         source = '<table><tr><td rowspan="2">Accuracy</td><td>91.5***</td></tr></table>'
         result = ContentProtector().protect(source, table_mode=True)
@@ -72,8 +102,38 @@ class ContentProtectionTests(unittest.TestCase):
         self.assertIn("number", kinds)
         self.assertEqual(result.restore(result.protected_text), source)
 
+    def test_context_masking_and_candidate_cleanup_remove_foreign_tokens(self):
+        result = ContentProtector().protect("$a$ and $b$")
+        first, second = (token.placeholder for token in result.tokens)
+        candidate = (
+            f"译文 {first} 和 {second} {second} "
+            "[[HTP_DEADBEEF_0003]]"
+        )
+
+        cleaned = result.clean_candidate(candidate)
+
+        self.assertNotIn("HTP_DEADBEEF", cleaned)
+        self.assertEqual(cleaned.count(first), 1)
+        self.assertEqual(cleaned.count(second), 1)
+        self.assertEqual(result.restore(cleaned), "译文 $a$ 和 $b$")
+        masked = mask_protected_tokens(result.protected_text)
+        self.assertNotIn("HTP_", masked)
+        self.assertIn("…", masked)
+
 
 class TranslationUnitTests(unittest.TestCase):
+    def test_restored_translation_normalizes_inline_superscripts_and_subscripts(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plan = load_plan(
+                Path(temp_dir),
+                [block(0, text="The halo mass is 10<sup>7</sup> M<sub>200</sub>.")],
+            )
+            unit = plan.units[0]
+            restored = unit.restore_protected_content(
+                "该晕质量为 10<sup>7</sup> M<sub>200</sub>。"
+            )
+            self.assertEqual(restored, "该晕质量为 10⁷ M₂₀₀。")
+
     def test_same_logical_paragraph_becomes_one_unit(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             blocks = [
@@ -84,6 +144,21 @@ class TranslationUnitTests(unittest.TestCase):
             self.assertEqual(len(plan.units), 1)
             self.assertEqual(plan.units[0].source_text, "First part second part.")
             self.assertEqual(len(plan.units[0].block_ids), 2)
+
+    def test_running_footer_never_shares_a_unit_with_body_text(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plan = load_plan(
+                Path(temp_dir),
+                [
+                    block(0, logical_id=7, text="Body paragraph"),
+                    block(1, block_type="footer", logical_id=7, text="Running footer"),
+                ],
+            )
+            self.assertEqual(len(plan.units), 2)
+            body = next(unit for unit in plan.units if unit.element_type is ElementType.TEXT)
+            footer = next(unit for unit in plan.units if unit.element_type is ElementType.FOOTER)
+            self.assertEqual(body.source_text, "Body paragraph")
+            self.assertEqual(footer.source_text, "Running footer")
 
     def test_table_and_caption_are_separate_units(self):
         with tempfile.TemporaryDirectory() as temp_dir:

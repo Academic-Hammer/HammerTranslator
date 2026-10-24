@@ -6,7 +6,30 @@ import hashlib
 import re
 from collections import Counter
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Literal
+
+
+OrderPolicy = Literal["strict", "typed"]
+
+# Formulas, code, markup, and table values are positional: moving them can
+# change the meaning or corrupt the layout. Citations, URLs, and similar
+# anchors may legitimately move when the target-language word order changes.
+ORDER_SENSITIVE_KINDS = frozenset(
+    {
+        "code_fence",
+        "latex_environment",
+        "latex_display",
+        "latex_bracket",
+        "latex_parenthesis",
+        "inline_code",
+        "latex_inline",
+        "html_tag",
+        "html_entity",
+        "stat_expression",
+        "number",
+        "stat_symbol",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -31,14 +54,58 @@ class ProtectionError(ValueError):
         super().__init__("; ".join(self.issues))
 
 
+PROTECTED_TOKEN_RE = re.compile(r"\[\[HTP_[A-F0-9]+_\d{4}\]\]")
+
+
+def mask_protected_tokens(text: str, *, replacement: str = "…") -> str:
+    """Replace protected placeholders so they cannot leak through context."""
+
+    masked = PROTECTED_TOKEN_RE.sub(replacement, text)
+    return re.sub(r"[ \t]{2,}", " ", masked).strip()
+
+
+def clean_protected_candidate(candidate: str, expected: Iterable[str]) -> str:
+    """Remove unknown and duplicate placeholders while preserving expected ones."""
+
+    expected_counts = Counter(expected)
+    observed_counts: Counter[str] = Counter()
+
+    def replace(match: re.Match[str]) -> str:
+        placeholder = match.group(0)
+        if placeholder not in expected_counts:
+            return " "
+        observed_counts[placeholder] += 1
+        return placeholder if observed_counts[placeholder] <= expected_counts[placeholder] else " "
+
+    cleaned = PROTECTED_TOKEN_RE.sub(replace, candidate)
+    return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+
+
 @dataclass(frozen=True)
 class ProtectionResult:
     original_text: str
     protected_text: str
     tokens: tuple[ProtectedToken, ...]
 
-    def restore(self, candidate: str) -> str:
-        """Validate token count/order, then restore exact original strings."""
+    def clean_candidate(self, candidate: str) -> str:
+        """Return a candidate with unknown or duplicated placeholders removed."""
+
+        return clean_protected_candidate(
+            candidate,
+            (token.placeholder for token in self.tokens),
+        )
+
+    def restore(self, candidate: str, *, order_policy: OrderPolicy = "strict") -> str:
+        """Validate token count/order, then restore exact original strings.
+
+        ``strict`` keeps the historical behavior and requires every protected
+        token to remain in source order. ``typed`` enforces order only for
+        position-sensitive kinds (formulas, code, markup, and table values),
+        allowing citations and URLs to follow natural target-language order.
+        """
+
+        if order_policy not in {"strict", "typed"}:
+            raise ValueError(f"unsupported order policy: {order_policy}")
 
         expected = [token.placeholder for token in self.tokens]
         issues: list[str] = []
@@ -48,12 +115,21 @@ class ProtectionResult:
                 issues.append(f"missing protected token {placeholder}")
             elif actual > count:
                 issues.append(f"duplicated protected token {placeholder}")
-        positions = [candidate.find(placeholder) for placeholder in expected]
+        order_expected = (
+            expected
+            if order_policy == "strict"
+            else [
+                token.placeholder
+                for token in self.tokens
+                if token.kind in ORDER_SENSITIVE_KINDS
+            ]
+        )
+        positions = [candidate.find(placeholder) for placeholder in order_expected]
         if all(position >= 0 for position in positions) and positions != sorted(positions):
             issues.append("protected token order changed")
 
         expected_set = set(expected)
-        observed = set(re.findall(r"\[\[HTP_[A-F0-9]+_\d{4}\]\]", candidate))
+        observed = set(PROTECTED_TOKEN_RE.findall(candidate))
         for placeholder in sorted(observed - expected_set):
             issues.append(f"unexpected protected token {placeholder}")
         if issues:

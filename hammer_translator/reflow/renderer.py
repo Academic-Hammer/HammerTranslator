@@ -16,6 +16,7 @@ from typing import Any
 
 import fitz
 
+from hammer_translator._hashing import sha256_file
 from ..font_assets import FontAssetError, resolve_registered_font
 from pydantic import ValidationError
 
@@ -27,6 +28,10 @@ from hammer_translator.translation.layout import (
 from hammer_translator.translation.output_schema import TranslationArtifactOutput
 
 from .schema import REFLOW_FEEDBACK_VERSION, ReflowReportOutput
+from .table import TablePlan, TableRenderJob, draw_table_job, plan_table_jobs, verify_table_job
+
+FORMULA_BBOX_TOLERANCE_PT = 0.75
+TEXT_BBOX_OVERLAP_RATIO = 0.5
 
 
 class ReflowContractError(ValueError):
@@ -35,14 +40,6 @@ class ReflowContractError(ValueError):
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _parse_color(value: Any) -> tuple[float, float, float]:
@@ -128,7 +125,7 @@ class ThinReflowRenderer:
         contract = artifact.get("formula_assets")
         if not isinstance(contract, dict):
             return {}
-        source_hash = _sha256(source_pdf)
+        source_hash = sha256_file(source_pdf)
         if source_hash != contract.get("source_pdf_sha256"):
             raise ReflowContractError("source PDF hash no longer matches formula assets")
         records: dict[str, dict[str, Any]] = {}
@@ -165,7 +162,7 @@ class ThinReflowRenderer:
                     raise ReflowContractError(
                         f"formula SVG escapes artifact directory: {formula_id}"
                     ) from exc
-                if not path.is_file() or _sha256(path) != asset.get("sha256"):
+                if not path.is_file() or sha256_file(path) != asset.get("sha256"):
                     raise ReflowContractError(
                         f"formula SVG is missing or changed: {formula_id}"
                     )
@@ -202,6 +199,20 @@ class ThinReflowRenderer:
             "translation_request": translation_request,
             "verification": verification,
         }
+
+    @staticmethod
+    def _has_blocking_feedback(feedback: list[dict[str, Any]]) -> bool:
+        """Items preserved in place are reviewable but do not block output."""
+
+        return any(
+            item["status"] in {"needs_review", "failed"}
+            and item["action"] != "preserve_original"
+            for item in feedback
+        )
+
+    @staticmethod
+    def _has_review_feedback(feedback: list[dict[str, Any]]) -> bool:
+        return any(item["status"] in {"needs_review", "failed"} for item in feedback)
 
     @staticmethod
     def _measurement_matches(stored: dict[str, Any], current: dict[str, Any]) -> bool:
@@ -279,6 +290,41 @@ class ThinReflowRenderer:
         )
 
     @staticmethod
+    def _unavailable_movable_formula_ids(
+        artifact: dict[str, Any],
+        item: dict[str, Any],
+    ) -> tuple[str, ...]:
+        """Return inline formulas that cannot be drawn as part of the text.
+
+        Display formulas and review-only source formulas stay in place, so a
+        failed asset for those does not prevent the surrounding text from
+        being reflowed.
+        """
+
+        formula_ids = set(item.get("formula_ids") or [])
+        if not formula_ids:
+            return ()
+        records = {
+            str(record.get("formula_id") or ""): record
+            for record in (artifact.get("formula_contract") or {}).get("inventory") or []
+        }
+        assets = {
+            str(record.get("formula_id") or ""): record
+            for record in (artifact.get("formula_assets") or {}).get("assets") or []
+        }
+        unavailable: list[str] = []
+        for formula_id in sorted(formula_ids):
+            record = records.get(formula_id)
+            if not isinstance(record, dict):
+                continue
+            if record.get("kind") != "inline" or record.get("render_policy") != "move_with_text":
+                continue
+            asset = assets.get(formula_id)
+            if not isinstance(asset, dict) or asset.get("status") != "ready":
+                unavailable.append(formula_id)
+        return tuple(unavailable)
+
+    @staticmethod
     def _translation_request(unit: dict[str, Any], measurement: dict[str, Any]) -> dict[str, Any]:
         layout = unit.get("layout") or {}
         constraints = dict(layout.get("retranslation_constraints") or {})
@@ -294,17 +340,223 @@ class ThinReflowRenderer:
             "constraints": constraints,
         }
 
+    _TEXT_CONTAINER_TYPES = frozenset(
+        {
+            "text",
+            "abstract",
+            "figure_caption",
+            "table_caption",
+            "reference",
+            "page_footnote",
+            "title",
+            "author",
+        }
+    )
+    _NON_TEXT_BLOCK_TYPES = frozenset(
+        {"image", "table", "figure", "equation", "page_number", "header"}
+    )
+
+    @staticmethod
+    def _source_tokens(text: Any) -> set[str]:
+        return set(re.findall(r"[a-z0-9]+", str(text or "").lower()))
+
+    @staticmethod
+    def _containment_ratio(inner: Any, outer: Any) -> float:
+        inner_rect = fitz.Rect(inner)
+        area = inner_rect.get_area()
+        if area <= 0:
+            return 0.0
+        overlap = inner_rect & fitz.Rect(outer)
+        return max(0.0, overlap.get_area()) / area
+
+    @classmethod
+    def _merged_container_candidate(cls, item: dict[str, Any]) -> bool:
+        """Return whether an item can represent several merged duplicate blocks."""
+
+        if str(item.get("detected_type") or "").lower() not in cls._TEXT_CONTAINER_TYPES:
+            return False
+        if str(item.get("type") or "").lower() in cls._NON_TEXT_BLOCK_TYPES:
+            return False
+        if item.get("translation_status") in {"preserved", "skipped"}:
+            return False
+        if not isinstance(item.get("translated"), str) or not item["translated"].strip():
+            return False
+        if not isinstance(item.get("recommended_style"), dict):
+            return False
+        if not (item.get("translation") or {}).get("style_role"):
+            return False
+        if len(cls._source_tokens(item.get("text"))) < 40:
+            return False
+        measurement = (item.get("layout_preflight") or {}).get("measurement")
+        return isinstance(measurement, dict) and measurement.get("fits") is True
+
+    @classmethod
+    def _dedup_nested_candidate(cls, item: dict[str, Any]) -> bool:
+        if str(item.get("detected_type") or "").lower() in cls._NON_TEXT_BLOCK_TYPES:
+            return False
+        if str(item.get("type") or "").lower() in cls._NON_TEXT_BLOCK_TYPES:
+            return False
+        if item.get("translation_status") in {"preserved", "skipped"}:
+            return False
+        if not isinstance(item.get("translated"), str) or not item["translated"].strip():
+            return False
+        return len(cls._source_tokens(item.get("text"))) >= 20
+
+    @classmethod
+    def _overlapping_container_groups(
+        cls, artifact: dict[str, Any]
+    ) -> dict[str, frozenset[str]]:
+        """Find merged blocks that repeat text already covered by a larger block.
+
+        MinerU occasionally emits one oversized block (often a figure caption
+        merged with the surrounding columns) while also emitting the same
+        paragraphs as separate blocks.  Reflowing both copies paints the same
+        region twice.  Keep the larger block, whose translation contains the
+        complete text, and skip the covered duplicates.
+        """
+
+        pages: dict[int, list[dict[str, Any]]] = {}
+        for item in artifact.get("items") or []:
+            if isinstance(item, dict):
+                pages.setdefault(int(item.get("page_idx") or 0), []).append(item)
+
+        groups: dict[str, set[str]] = {}
+        for page_items in pages.values():
+            containers = [
+                item
+                for item in page_items
+                if cls._merged_container_candidate(item)
+                and not cls._unavailable_movable_formula_ids(artifact, item)
+            ]
+            if not containers:
+                continue
+            parent_of: dict[str, str] = {}
+            for nested in page_items:
+                if not cls._dedup_nested_candidate(nested):
+                    continue
+                nested_id = str(nested.get("block_id") or "")
+                nested_tokens = cls._source_tokens(nested.get("text"))
+                if not nested_id or len(nested_tokens) < 20:
+                    continue
+                matches: list[dict[str, Any]] = []
+                for container in containers:
+                    container_id = str(container.get("block_id") or "")
+                    if not container_id or container_id == nested_id:
+                        continue
+                    container_rect = fitz.Rect(container.get("bbox") or ())
+                    nested_rect = fitz.Rect(nested.get("bbox") or ())
+                    if container_rect.get_area() < nested_rect.get_area() * 1.5:
+                        continue
+                    if cls._containment_ratio(nested_rect, container_rect) < 0.9:
+                        continue
+                    container_tokens = cls._source_tokens(container.get("text"))
+                    coverage = len(nested_tokens & container_tokens) / len(nested_tokens)
+                    if coverage >= 0.9:
+                        matches.append(container)
+                if matches:
+                    tightest = min(
+                        matches,
+                        key=lambda candidate: fitz.Rect(candidate.get("bbox") or ()).get_area(),
+                    )
+                    parent_of[nested_id] = str(tightest.get("block_id") or "")
+
+            for nested_id in parent_of:
+                current = nested_id
+                visited: set[str] = set()
+                while current in parent_of and current not in visited:
+                    visited.add(current)
+                    current = parent_of[current]
+                if current != nested_id:
+                    groups.setdefault(current, set()).add(nested_id)
+        return {container_id: frozenset(nested) for container_id, nested in groups.items()}
+
+    @staticmethod
+    def _overlapping_job_block_ids(jobs: list[RenderJob]) -> dict[str, set[str]]:
+        """Return text jobs that would paint over most of another text job."""
+
+        by_page: dict[int, list[RenderJob]] = {}
+        for job in jobs:
+            by_page.setdefault(job.page_idx, []).append(job)
+        conflicts: dict[str, set[str]] = {}
+        for page_jobs in by_page.values():
+            for index, first in enumerate(page_jobs):
+                first_rect = fitz.Rect(first.bbox)
+                first_area = first_rect.get_area()
+                for second in page_jobs[index + 1 :]:
+                    second_rect = fitz.Rect(second.bbox)
+                    second_area = second_rect.get_area()
+                    smaller = min(first_area, second_area)
+                    if smaller <= 0:
+                        continue
+                    overlap = (first_rect & second_rect).get_area()
+                    if overlap / smaller < TEXT_BBOX_OVERLAP_RATIO:
+                        continue
+                    conflicts.setdefault(first.block_id, set()).add(second.block_id)
+                    conflicts.setdefault(second.block_id, set()).add(first.block_id)
+        return conflicts
+
     def _preflight(
         self,
         artifact: dict[str, Any],
         metrics: LayoutMetrics,
+        table_plan: TablePlan | None = None,
     ) -> tuple[list[RenderJob], list[dict[str, Any]]]:
+        table_plan = table_plan or TablePlan((), frozenset(), {})
+        table_jobs = {job.block_id: job for job in table_plan.jobs}
+        merged_groups = self._overlapping_container_groups(artifact)
         units = {unit["translation_unit_id"]: unit for unit in artifact["translation_units"]}
         jobs: list[RenderJob] = []
         feedback: list[dict[str, Any]] = []
         for item_index, item in enumerate(artifact["items"]):
             unit = units[item["translation_unit_id"]]
             translation_status = item.get("translation_status")
+            block_id = str(item.get("block_id") or "")
+            if block_id in table_plan.covered_block_ids:
+                feedback.append(
+                    self._feedback(
+                        item,
+                        status="rendered",
+                        reason="covered_by_structured_table_reflow",
+                        action="none",
+                        verification={
+                            "text_layer_nonempty": True,
+                            "bbox_unchanged": True,
+                            "page_size_unchanged": True,
+                            "covered_by_table_reflow": True,
+                        },
+                    )
+                )
+                continue
+            if block_id in table_jobs:
+                table_job = table_jobs[block_id]
+                feedback.append(
+                    self._feedback(
+                        item,
+                        status="rendered",
+                        reason="structured_table_reflow_confirmed",
+                        action="none",
+                        role="table",
+                        style=item.get("recommended_style"),
+                        measurement={
+                            "table_regions": len(table_job.regions),
+                            "table_cells": len(table_job.cells),
+                            "font_size_pt": table_job.cells[0].font_size if table_job.cells else None,
+                        },
+                    )
+                )
+                continue
+            if block_id in table_plan.errors:
+                table_error = table_plan.errors[block_id]
+                feedback.append(
+                    self._feedback(
+                        item,
+                        status="needs_review",
+                        reason=f"table_reflow_unavailable:{table_error}",
+                        action="preserve_original",
+                        measurement={"table_error": table_error},
+                    )
+                )
+                continue
             if translation_status == "preserved":
                 feedback.append(
                     self._feedback(
@@ -346,6 +598,23 @@ class ThinReflowRenderer:
                     )
                 )
                 continue
+            unavailable_formulas = self._unavailable_movable_formula_ids(artifact, item)
+            if unavailable_formulas:
+                feedback.append(
+                    self._feedback(
+                        item,
+                        status="needs_review",
+                        reason=(
+                            "formula_asset_unavailable:"
+                            + ",".join(unavailable_formulas)
+                        ),
+                        action="preserve_original",
+                        role=role,
+                        style=style,
+                        measurement={"formula_ids": list(unavailable_formulas)},
+                    )
+                )
+                continue
             try:
                 formula_runs = self._formula_runs(artifact, unit, item, text)
                 measured = metrics.measure(
@@ -353,6 +622,7 @@ class ThinReflowRenderer:
                     item["bbox"],
                     role=role,
                     style=style,
+                    enforce_guardrails=False,
                     formula_runs=formula_runs,
                 ).as_dict()
             except (LayoutMetricError, KeyError, TypeError, ValueError) as exc:
@@ -443,6 +713,64 @@ class ThinReflowRenderer:
                     measurement=measured,
                 )
             )
+        rendered_block_ids = {job.block_id for job in jobs}
+        items_by_block = {
+            str(item.get("block_id") or ""): item for item in artifact["items"]
+        }
+        feedback_by_block = {entry["block_id"]: entry for entry in feedback}
+        removed_block_ids: set[str] = set()
+        for container_id, nested_ids in merged_groups.items():
+            if container_id not in rendered_block_ids:
+                continue
+            container_removed: set[str] = set()
+            for nested_id in nested_ids:
+                nested_item = items_by_block.get(nested_id)
+                if nested_item is None or nested_id in table_plan.covered_block_ids:
+                    continue
+                replacement = self._feedback(
+                    nested_item,
+                    status="skipped",
+                    reason="merged_into_overlapping_container_block",
+                    action="none",
+                    role=(nested_item.get("translation") or {}).get("style_role"),
+                    style=nested_item.get("recommended_style"),
+                    verification={
+                        "covered_by_container_block": True,
+                        "container_block_id": container_id,
+                    },
+                )
+                existing = feedback_by_block.get(nested_id)
+                if existing is None:
+                    feedback.append(replacement)
+                    feedback_by_block[nested_id] = replacement
+                else:
+                    existing.clear()
+                    existing.update(replacement)
+                removed_block_ids.add(nested_id)
+                container_removed.add(nested_id)
+            container_feedback = feedback_by_block.get(container_id)
+            if container_removed and container_feedback is not None:
+                container_feedback["verification"] = {
+                    **(container_feedback.get("verification") or {}),
+                    "merged_duplicate_block_ids": sorted(container_removed),
+                }
+        if removed_block_ids:
+            jobs = [job for job in jobs if job.block_id not in removed_block_ids]
+        conflicts = self._overlapping_job_block_ids(jobs)
+        if conflicts:
+            for entry in feedback:
+                peers = conflicts.get(entry["block_id"])
+                if not peers or entry["status"] != "rendered":
+                    continue
+                entry["status"] = "needs_review"
+                entry["reason"] = "overlapping_text_bboxes"
+                entry["action"] = "manual_review"
+                entry["measurement"] = {
+                    **(entry.get("measurement") or {}),
+                    "overlapping_block_ids": sorted(peers),
+                }
+                entry["translation_request"] = None
+            jobs = [job for job in jobs if job.block_id not in conflicts]
         return jobs, feedback
 
     @staticmethod
@@ -641,6 +969,7 @@ class ThinReflowRenderer:
         jobs: list[RenderJob],
         placements: list[FormulaPlacement],
         drawn_formula_ids: list[str],
+        table_jobs: list[TableRenderJob] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
         source = fitz.open(source_pdf)
         rendered = fitz.open(output)
@@ -677,10 +1006,10 @@ class ThinReflowRenderer:
                 )
                 locked = fitz.Rect(job.bbox)
                 inside = all(
-                    box.x0 >= locked.x0 - 0.02
-                    and box.y0 >= locked.y0 - 0.02
-                    and box.x1 <= locked.x1 + 0.02
-                    and box.y1 <= locked.y1 + 0.02
+                    box.x0 >= locked.x0 - FORMULA_BBOX_TOLERANCE_PT
+                    and box.y0 >= locked.y0 - FORMULA_BBOX_TOLERANCE_PT
+                    and box.x1 <= locked.x1 + FORMULA_BBOX_TOLERANCE_PT
+                    and box.y1 <= locked.y1 + FORMULA_BBOX_TOLERANCE_PT
                     for box in formula_boxes
                 )
                 ink_checks: list[bool] = []
@@ -731,6 +1060,8 @@ class ThinReflowRenderer:
                         placement.draw_method for placement in job_placements
                     ],
                 }
+            for table_job in table_jobs or []:
+                results[table_job.block_id] = verify_table_job(rendered, table_job)
             expected_ids = [placement.formula_id for placement in placements]
             formula_summary = {
                 "expected": len(expected_ids),
@@ -743,20 +1074,21 @@ class ThinReflowRenderer:
                 ),
                 "order_verified": expected_ids == drawn_formula_ids,
                 "bbox_verified": all(
-                    result["formula_bbox_inside_locked_bbox"] for result in results.values()
+                    result.get("formula_bbox_inside_locked_bbox", True)
+                    for result in results.values()
                 ),
                 "baseline_verified": all(
-                    result["formula_baseline_max_error_pt"] <= 0.02
+                    result.get("formula_baseline_max_error_pt", 0.0) <= 0.02
                     for result in results.values()
                 ),
                 "overlap_count": sum(
-                    result["formula_overlap_count"] for result in results.values()
+                    result.get("formula_overlap_count", 0) for result in results.values()
                 ),
                 "nonempty_verified": all(
-                    result["formula_target_nonempty"] for result in results.values()
+                    result.get("formula_target_nonempty", True) for result in results.values()
                 ),
                 "vector_only": all(
-                    result["formula_vector_only"] for result in results.values()
+                    result.get("formula_vector_only", True) for result in results.values()
                 ),
             }
             return results, formula_summary
@@ -785,8 +1117,9 @@ class ThinReflowRenderer:
         if output == source_pdf:
             raise ReflowContractError("Reflow output must not overwrite the source PDF")
         formula_assets = self._verify_formula_assets(source_artifact, artifact, source_pdf)
+        table_plan = plan_table_jobs(artifact, source_pdf, profile)
 
-        jobs, feedback = self._preflight(artifact, metrics)
+        jobs, feedback = self._preflight(artifact, metrics, table_plan=table_plan)
         placements = [placement for job in jobs for placement in self._formula_placements(job)]
         missing_assets = sorted(
             placement.formula_id
@@ -794,10 +1127,34 @@ class ThinReflowRenderer:
             if placement.formula_id not in formula_assets
         )
         if missing_assets:
-            raise ReflowContractError(
-                f"formula placements have no verified assets: {missing_assets[:5]}"
-            )
-        blocking = any(item["status"] in {"needs_review", "failed"} for item in feedback)
+            missing_set = set(missing_assets)
+            affected_blocks = {
+                placement.block_id
+                for placement in placements
+                if placement.formula_id in missing_set
+            }
+            for item in feedback:
+                if item["block_id"] in affected_blocks:
+                    item["status"] = "needs_review"
+                    item["reason"] = (
+                        "formula_asset_missing_at_draw:"
+                        + ",".join(sorted(missing_set))
+                    )
+                    item["action"] = "preserve_original"
+                    item["measurement"] = {"formula_ids": sorted(missing_set)}
+                    item["translation_request"] = None
+            jobs = [job for job in jobs if job.block_id not in affected_blocks]
+            placements = [
+                placement
+                for placement in placements
+                if placement.formula_id not in missing_set
+            ]
+        blocking = self._has_blocking_feedback(feedback)
+        has_degraded_preserve = any(
+            item["status"] == "needs_review"
+            and item["action"] == "preserve_original"
+            for item in feedback
+        )
         output_value: str | None = None
         status = "blocked"
         formula_verification = {
@@ -812,12 +1169,27 @@ class ThinReflowRenderer:
             "nonempty_verified": True,
             "vector_only": True,
         }
-        if jobs and (self.allow_partial or not blocking):
+        if (jobs or table_plan.jobs or has_degraded_preserve) and (
+            self.allow_partial or not blocking
+        ):
             document = fitz.open(source_pdf)
             source_formula_document = fitz.open(source_pdf)
             svg_documents: dict[str, fitz.Document] = {}
             drawn_formula_ids: list[str] = []
             try:
+                table_pages: set[int] = set()
+                for table_job in table_plan.jobs:
+                    for page_idx, region in table_job.regions:
+                        document[page_idx].add_redact_annot(
+                            fitz.Rect(region), fill=(1, 1, 1), cross_out=False
+                        )
+                        table_pages.add(page_idx)
+                for page_index in sorted(table_pages):
+                    document[page_index].apply_redactions(
+                        images=fitz.PDF_REDACT_IMAGE_NONE,
+                        graphics=fitz.PDF_REDACT_LINE_ART_REMOVE_IF_COVERED,
+                        text=fitz.PDF_REDACT_TEXT_REMOVE,
+                    )
                 pages_with_redactions: set[int] = set()
                 for job in jobs:
                     document[job.page_idx].add_redact_annot(
@@ -873,6 +1245,14 @@ class ThinReflowRenderer:
                             f"formula vector insertion failed: {placement.formula_id}"
                         )
                     drawn_formula_ids.append(placement.formula_id)
+                for table_job in table_plan.jobs:
+                    table_font = font_cache.get(table_job.font_id)
+                    if table_font is None:
+                        table_font = fitz.Font(
+                            fontfile=str(Path(profile["fonts"][table_job.font_id]["path"]).resolve())
+                        )
+                        font_cache[table_job.font_id] = table_font
+                    draw_table_job(document, table_job, table_font)
                 for (page_index, color), writer in writers.items():
                     writer.write_text(document[page_index], color=color, overlay=1)
                 self._atomic_save(document, output)
@@ -888,6 +1268,7 @@ class ThinReflowRenderer:
                     jobs,
                     placements,
                     drawn_formula_ids,
+                    table_plan.jobs,
                 )
                 formula_checks = (
                     formula_verification["expected"] == formula_verification["drawn"],
@@ -906,13 +1287,19 @@ class ThinReflowRenderer:
                 raise
             for item in feedback:
                 if item["block_id"] in verification:
-                    item["verification"] = verification[item["block_id"]]
+                    item["verification"] = {
+                        **(item.get("verification") or {}),
+                        **verification[item["block_id"]],
+                    }
                     if not verification[item["block_id"]]["text_layer_nonempty"]:
                         item["status"] = "failed"
                         item["reason"] = "rendered_text_layer_is_empty"
                         item["action"] = "manual_review"
-            blocking = any(item["status"] in {"needs_review", "failed"} for item in feedback)
-            status = "partial_needs_review" if blocking else "rendered"
+            status = (
+                "partial_needs_review"
+                if self._has_review_feedback(feedback)
+                else "rendered"
+            )
             output_value = str(output)
 
         counts = Counter(item["status"] for item in feedback)

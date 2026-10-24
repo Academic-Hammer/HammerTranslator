@@ -1,6 +1,9 @@
 # Safe Translation Stage configuration.
 # Credentials are never stored here. Set the environment variable named by
 # api_key_env before using --run.
+#
+# Source and target languages are passed via CLI flags (--source-language,
+# --target-language) or PipelineConfig defaults; they are not stored here.
 schema_version: translation-config-v1
 
 providers:
@@ -12,7 +15,3 @@ providers:
     base_url: "https://api.openai.com/v1"
     model: "gpt-4o-mini"
     api_key_env: "OPENAI_API_KEY"
-
-translation:
-  source_language: "en"
-  target_language: "zh-CN"

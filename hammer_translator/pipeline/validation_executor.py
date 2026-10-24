@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +9,7 @@ from pathlib import Path
 import fitz
 from pydantic import ValidationError
 
+from hammer_translator._hashing import sha256_file
 from hammer_translator.reflow.schema import ReflowReportOutput
 from hammer_translator.translation.jsonio import write_json_atomic
 
@@ -31,14 +31,6 @@ from .validation_schema import (
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 class PDFValidationStageExecutor:
@@ -123,7 +115,7 @@ class PDFValidationStageExecutor:
     ) -> tuple[bool, str | None]:
         if not path.is_file():
             return False, None
-        actual = _sha256(path)
+        actual = sha256_file(path)
         return artifact.sha256 == actual, actual
 
     def _inspect_pdf(

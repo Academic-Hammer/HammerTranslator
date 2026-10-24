@@ -1,8 +1,8 @@
 # HammerTranslator V1 Pipeline
 
-V1 is a single-user local web tool running on Apple Silicon macOS inside the
-`hammertrans` Conda environment. Its contracts intentionally avoid local
-absolute paths so the same API and frontend can later target Linux/GPU workers.
+V1 is a single-user command-line application running on Apple Silicon macOS
+inside the `hammertrans` Conda environment. Its contracts intentionally avoid
+local absolute paths so the same API can later target Linux/GPU workers.
 
 ## Step 1 contract
 

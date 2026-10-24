@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import tempfile
 import unittest
@@ -7,10 +8,16 @@ from pathlib import Path
 
 import fitz
 
-from hammer_translator.reflow.renderer import ReflowContractError, ThinReflowRenderer
+from hammer_translator.reflow.renderer import (
+    ReflowContractError,
+    RenderJob,
+    ThinReflowRenderer,
+)
+from hammer_translator.reflow.table import TablePlan
 from hammer_translator.translation.artifact import build_translation_artifact
 from hammer_translator.translation.cache import TranslationCache
 from hammer_translator.translation.jsonio import write_json_atomic
+from hammer_translator.translation.layout import LayoutMetrics
 from hammer_translator.translation.loader import DiscoveredInput, load_document
 from hammer_translator.translation.provider import FakeProvider
 from hammer_translator.translation.runner import RunnerConfig, execute_translation_plan
@@ -73,6 +80,118 @@ def _artifact(root: Path, *, bbox: list[float] | None = None, source_text: str =
 
 
 class ThinReflowTests(unittest.TestCase):
+    def test_overlapping_text_jobs_are_reported_and_not_drawn(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _, artifact, _ = _artifact(root)
+            first = artifact["items"][0]
+            second = copy.deepcopy(first)
+            second["block_id"] = "p0001-b0002"
+            artifact["items"] = [first, second]
+
+            renderer = ThinReflowRenderer()
+            jobs, feedback = renderer._preflight(
+                artifact, LayoutMetrics(artifact["golden_style_profile"])
+            )
+
+            self.assertEqual(jobs, [])
+            for item in feedback:
+                self.assertEqual(item["status"], "needs_review")
+                self.assertEqual(item["reason"], "overlapping_text_bboxes")
+                self.assertEqual(item["action"], "manual_review")
+                self.assertEqual(
+                    item["measurement"]["overlapping_block_ids"],
+                    ["p0001-b0002"]
+                    if item["block_id"] == "p0001-b0001"
+                    else ["p0001-b0001"],
+                )
+
+    def test_text_overlap_guard_ignores_small_vertical_contact(self):
+        def job(block_id: str, bbox: tuple[float, float, float, float]) -> RenderJob:
+            return RenderJob(
+                item_index=0,
+                block_id=block_id,
+                unit_id="tu",
+                page_idx=0,
+                bbox=bbox,
+                text="text",
+                role="body",
+                style={},
+                measurement={},
+                color=(0.0, 0.0, 0.0),
+            )
+
+        renderer = ThinReflowRenderer()
+        small = renderer._overlapping_job_block_ids(
+            [job("a", (0, 0, 100, 100)), job("b", (0, 60, 100, 160))]
+        )
+        large = renderer._overlapping_job_block_ids(
+            [job("a", (0, 0, 100, 100)), job("b", (0, 40, 100, 140))]
+        )
+
+        self.assertEqual(small, {})
+        self.assertEqual(large, {"a": {"b"}, "b": {"a"}})
+
+    def test_overlapping_merged_block_suppresses_duplicate_nested_blocks(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _, artifact, _ = _artifact(root)
+            base = artifact["items"][0]
+            words = [
+                "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta",
+                "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron", "pi", "rho",
+                "sigma", "tau", "upsilon", "phi", "chi", "psi", "omega", "one", "two",
+                "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+                "seventeen", "eighteen", "nineteen", "twenty",
+            ]
+
+            container = copy.deepcopy(base)
+            container.update(
+                block_id="p0001-b0004",
+                type="figure_caption",
+                detected_type="figure_caption",
+                text=" ".join(words),
+            )
+            duplicate = copy.deepcopy(base)
+            duplicate.update(
+                block_id="p0001-b0005",
+                bbox=[24, 24, 100, 40],
+                text=" ".join(words[:24]),
+            )
+            unrelated = copy.deepcopy(base)
+            unrelated.update(
+                block_id="p0001-b0006",
+                bbox=[110, 24, 200, 40],
+                text=(
+                    "quasar nebula parsec redshift spectroscopy photometry interferometry "
+                    "exoplanet magnetohydrodynamics asteroseismology helioseismology "
+                    "chromosphere corona prominence filament reconnection turbulence "
+                    "convection granulation facula"
+                ),
+            )
+            artifact["items"] = [container, duplicate, unrelated]
+
+            renderer = ThinReflowRenderer()
+            groups = renderer._overlapping_container_groups(artifact)
+            self.assertEqual(groups, {"p0001-b0004": frozenset({"p0001-b0005"})})
+
+            jobs, feedback = renderer._preflight(
+                artifact, LayoutMetrics(artifact["golden_style_profile"])
+            )
+            by_block = {item["block_id"]: item for item in feedback}
+            self.assertEqual([job.block_id for job in jobs], ["p0001-b0004"])
+            self.assertEqual(
+                by_block["p0001-b0004"]["verification"]["merged_duplicate_block_ids"],
+                ["p0001-b0005"],
+            )
+            self.assertEqual(by_block["p0001-b0005"]["status"], "skipped")
+            self.assertEqual(
+                by_block["p0001-b0005"]["reason"],
+                "merged_into_overlapping_container_block",
+            )
+            self.assertEqual(by_block["p0001-b0005"]["action"], "none")
+
     def test_ready_artifact_renders_without_rewriting_or_page_geometry_change(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -130,6 +249,76 @@ class ThinReflowTests(unittest.TestCase):
             self.assertEqual(report["status"], "blocked")
             self.assertEqual(report["summary"]["failed"], 1)
             self.assertFalse(output.exists())
+
+    def test_table_structure_error_is_visible_and_preserves_the_original(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _, artifact, _ = _artifact(root)
+            renderer = ThinReflowRenderer()
+            block_id = artifact["items"][0]["block_id"]
+            table_plan = TablePlan(
+                (),
+                frozenset(),
+                {block_id: "table_structure_unavailable"},
+            )
+
+            jobs, feedback = renderer._preflight(
+                artifact,
+                LayoutMetrics(artifact["golden_style_profile"]),
+                table_plan=table_plan,
+            )
+
+            self.assertEqual(jobs, [])
+            self.assertEqual(feedback[0]["status"], "needs_review")
+            self.assertEqual(feedback[0]["action"], "preserve_original")
+            self.assertEqual(
+                feedback[0]["reason"],
+                "table_reflow_unavailable:table_structure_unavailable",
+            )
+            self.assertFalse(renderer._has_blocking_feedback(feedback))
+
+    def test_failed_inline_formula_asset_only_degrades_its_block(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            _, artifact, _ = _artifact(root)
+            artifact["items"][0]["formula_ids"] = ["fm-inline", "fm-display"]
+            artifact["formula_contract"] = {
+                "inventory": [
+                    {
+                        "formula_id": "fm-inline",
+                        "kind": "inline",
+                        "render_policy": "move_with_text",
+                    },
+                    {
+                        "formula_id": "fm-display",
+                        "kind": "display",
+                        "render_policy": "preserve_in_place",
+                    },
+                ]
+            }
+            artifact["formula_assets"] = {
+                "assets": [
+                    {"formula_id": "fm-inline", "status": "failed"},
+                    {"formula_id": "fm-display", "status": "failed"},
+                ]
+            }
+            renderer = ThinReflowRenderer()
+
+            unavailable = renderer._unavailable_movable_formula_ids(
+                artifact, artifact["items"][0]
+            )
+            _, feedback = renderer._preflight(
+                artifact,
+                LayoutMetrics(artifact["golden_style_profile"]),
+            )
+
+            self.assertEqual(unavailable, ("fm-inline",))
+            self.assertEqual(feedback[0]["status"], "needs_review")
+            self.assertEqual(feedback[0]["action"], "preserve_original")
+            self.assertEqual(
+                feedback[0]["reason"], "formula_asset_unavailable:fm-inline"
+            )
+            self.assertFalse(renderer._has_blocking_feedback(feedback))
 
     def test_inline_formula_is_preserved_for_manual_review(self):
         with tempfile.TemporaryDirectory() as temp_dir:

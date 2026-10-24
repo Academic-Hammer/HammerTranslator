@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections import Counter, OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -10,7 +11,7 @@ from typing import Any
 from .authors import AuthorSplit, split_author_block
 from .formula import FORMULA_CONTRACT_VERSION, FormulaBinding, build_formula_bindings
 from .loader import LoadedBlock, LoadedDocument
-from .protection import ContentProtector, ProtectedToken, ProtectionResult
+from .protection import ContentProtector, OrderPolicy, ProtectedToken, ProtectionResult
 from .taxonomy import ElementType, TaxonomyDecision, TranslationPolicy
 
 
@@ -20,6 +21,26 @@ CAPTION_TYPES = {
     ElementType.FIGURE_CAPTION,
     ElementType.TABLE_CAPTION,
 }
+
+
+_SUPERSCRIPT_CHARS = str.maketrans(
+    "0123456789+-−=()abcdefghijklmnoprstuvwxyz",
+    "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ",
+)
+_SUBSCRIPT_CHARS = str.maketrans(
+    "0123456789+-−=()aehijklmnoprstuvx",
+    "₀₁₂₃₄₅₆₇₈₉₊₋₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ",
+)
+
+
+def _normalize_inline_markup(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        content = match.group(2)
+        table = _SUPERSCRIPT_CHARS if match.group(1).lower() == "sup" else _SUBSCRIPT_CHARS
+        return content.translate(table)
+
+    normalized = re.sub(r"<(sup|sub)>(.*?)</\1>", replace, value, flags=re.IGNORECASE | re.DOTALL)
+    return re.sub(r"</?su[bp]>", "", normalized, flags=re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -36,12 +57,22 @@ class TranslationUnit:
     quality_flags: tuple[str, ...] = ()
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def restore_protected_content(self, candidate: str) -> str:
+    def clean_protected_candidate(self, candidate: str) -> str:
         return ProtectionResult(
             original_text=self.source_text,
             protected_text=self.protected_text,
             tokens=self.protected_tokens,
-        ).restore(candidate)
+        ).clean_candidate(candidate)
+
+    def restore_protected_content(
+        self, candidate: str, *, order_policy: OrderPolicy = "strict"
+    ) -> str:
+        restored = ProtectionResult(
+            original_text=self.source_text,
+            protected_text=self.protected_text,
+            tokens=self.protected_tokens,
+        ).restore(candidate, order_policy=order_policy)
+        return _normalize_inline_markup(restored)
 
 
 @dataclass(frozen=True)
@@ -103,6 +134,16 @@ def _group_key(block: LoadedBlock, decision: TaxonomyDecision) -> tuple[Any, ...
     logical_id = block.data.logical_para_id
     if decision.element_type in {ElementType.TABLE, ElementType.IMAGE}:
         return ("block", block.block_id)
+    if decision.element_type in {
+        ElementType.HEADER,
+        ElementType.FOOTER,
+        ElementType.PAGE_NUMBER,
+        ElementType.PAGE_FOOTNOTE,
+    }:
+        # Running headers and footers can reuse a body paragraph's logical id
+        # across a page break. They are page furniture and must never be folded
+        # into the body text they happen to precede or follow.
+        return ("margin", decision.element_type.value, block.block_id)
     if decision.element_type in CAPTION_TYPES:
         # MinerU can assign the same logical paragraph to a whole-figure caption
         # and labels detected inside the figure. A caption therefore never shares
@@ -124,8 +165,27 @@ def _merge_text(blocks: list[LoadedBlock]) -> str:
         if isinstance(block.raw.get("context"), str) and str(block.raw.get("context")).strip()
     }
     if len(contexts) == 1:
-        return next(iter(contexts))
-    return " ".join(block.data.text.strip() for block in blocks if block.data.text.strip()).strip()
+        context = next(iter(contexts))
+        normalized_context = re.sub(r"\s+", " ", context).strip().casefold()
+        if all(
+            not block.data.text.strip()
+            or re.sub(r"\s+", " ", block.data.text).strip().casefold()
+            in normalized_context
+            for block in blocks
+        ):
+            return context
+    merged = ""
+    for block in blocks:
+        text = block.data.text.strip()
+        if not text:
+            continue
+        if merged.endswith("-") and text[:1].islower():
+            merged += text
+        elif merged:
+            merged += " " + text
+        else:
+            merged = text
+    return merged.strip()
 
 
 def _unit_id(document_id: str, element_type: ElementType, logical_id: int, block_ids: tuple[str, ...]) -> str:
@@ -184,7 +244,7 @@ def build_translation_plan(
 
         extra_spans = ()
         table_mode = element_type is ElementType.TABLE
-        if element_type is ElementType.AUTHOR:
+        if element_type is ElementType.AUTHOR and policy is not TranslationPolicy.PRESERVE:
             author_split = split_author_block(source_text)
             metadata.update(_author_metadata(author_split))
             extra_spans = author_split.protected_spans

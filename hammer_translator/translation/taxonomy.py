@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
@@ -38,6 +39,23 @@ class TranslationPolicy(str, Enum):
     PRESERVE = "preserve"
     SKIP = "skip"
     NEEDS_REVIEW = "needs_review"
+
+
+CAPTION_START_RE = re.compile(
+    r"^\s*(?P<label>Figure|Fig\.?|Table)(?=\s|\d|[:：.\-–—]|$)",
+    re.IGNORECASE,
+)
+
+
+def caption_element_type(text: str) -> ElementType | None:
+    """Return a caption type when text begins with a figure/table label."""
+
+    match = CAPTION_START_RE.match(text or "")
+    if match is None:
+        return None
+    if match.group("label").casefold().startswith("table"):
+        return ElementType.TABLE_CAPTION
+    return ElementType.FIGURE_CAPTION
 
 
 @dataclass(frozen=True)
@@ -81,7 +99,13 @@ def classify_element(item: Mapping[str, Any]) -> TaxonomyDecision:
     raw_type = str(item.get("type") or "").strip().lower()
     sub_type = str(item.get("sub_type") or "").strip().lower()
 
-    if raw_type == "text":
+    if raw_type == "chart":
+        # A chart body is a graphic.  Its caption is extracted into its own
+        # block by the loader when MinerU folds both into one item.
+        element_type = (
+            caption_element_type(str(item.get("text") or "")) or ElementType.IMAGE
+        )
+    elif raw_type == "text":
         if sub_type == "abstract":
             element_type = ElementType.ABSTRACT
         elif sub_type in {"title", "doc_title"}:

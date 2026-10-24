@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
+from ._hashing import sha256_file
 from .runtime_paths import FONTS_DIR_ENV, runtime_paths
 
 DEFAULT_FONTS_DIR = runtime_paths().fonts_dir
@@ -17,14 +17,6 @@ FONT_DIRECTORY_ENV = FONTS_DIR_ENV
 
 class FontAssetError(RuntimeError):
     """Raised when a required font is missing, changed, or misconfigured."""
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 @lru_cache(maxsize=8)
@@ -66,7 +58,7 @@ def expected_font_hash(filename: str) -> str:
 
 
 def _verified(path: Path, expected_hash: str) -> bool:
-    return path.is_file() and _sha256(path) == expected_hash
+    return path.is_file() and sha256_file(path) == expected_hash
 
 
 def required_font_path(category: str) -> Path:

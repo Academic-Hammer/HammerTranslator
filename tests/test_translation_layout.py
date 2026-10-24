@@ -155,6 +155,38 @@ class GoldenStyleTests(unittest.TestCase):
                 {"document_title", "section_header_l1", "body", "caption"},
             )
 
+    def test_body_line_height_guardrail_keeps_a_practical_floor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "paper_enriched.json"
+            source.write_text(
+                json.dumps(
+                    [
+                        _block(
+                            0,
+                            text="A body paragraph with generous original leading.",
+                            bbox=[10, 20, 190, 70],
+                            rich_spans=[_span("Body paragraph", 10)],
+                            lines=[
+                                {"bbox": [10, 20, 180, 30]},
+                                {"bbox": [10, 37.5, 180, 47.5]},
+                            ],
+                        )
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            _write_pdf(root / "paper_origin.pdf")
+            document = load_document(DiscoveredInput(source.resolve(), "test"))
+            profile = build_golden_style_profile(build_translation_plan(document))
+            body = profile["roles"]["body"]
+            self.assertAlmostEqual(
+                body["source_statistics"]["line_height_multiplier"], 1.75
+            )
+            self.assertAlmostEqual(
+                body["guardrails"]["line_height_multiplier"]["min"], 1.15
+            )
+
 
 class LayoutMetricsTests(unittest.TestCase):
     def setUp(self):
@@ -233,6 +265,27 @@ class LayoutMetricsTests(unittest.TestCase):
         self.assertEqual(result.available_height_pt, 11.0)
         self.assertGreater(result.overflow_height_pt, 0)
 
+    def test_sub_point_rounding_overflow_is_accepted(self):
+        text = "U-Net 编码器路径"
+        style, _ = self.metrics.style_for_role("body")
+        full = self.metrics.measure(text, [0, 0, 200, 100], role="body", style=style)
+        allowed = self.metrics.measure(
+            text,
+            [0, 0, 200, full.used_height_pt - 0.5],
+            role="body",
+            style=style,
+        )
+        rejected = self.metrics.measure(
+            text,
+            [0, 0, 200, full.used_height_pt - 1.5],
+            role="body",
+            style=style,
+        )
+        self.assertTrue(allowed.fits)
+        self.assertAlmostEqual(allowed.overflow_height_pt, 0.5, delta=0.1)
+        self.assertFalse(rejected.fits)
+        self.assertAlmostEqual(rejected.overflow_height_pt, 1.5, delta=0.1)
+
     def test_guardrails_reject_excessive_font_shrink(self):
         style, _ = self.metrics.style_for_role("body")
         style["font_size_pt"] = 9.0
@@ -248,6 +301,62 @@ class LayoutMetricsTests(unittest.TestCase):
             "ChineseABC", [0, 0, 200, 100], role="body", style=tight_style
         )
         self.assertLess(tight.used_width_pt, normal.used_width_pt)
+
+    def test_malformed_latex_residue_is_rendered_as_readable_text(self):
+        source = "其中 r _ { \\mathrm { s } } , 与 \\rho _ { \\mathrm { s } } , 是参数。"
+        result = self.metrics.measure(source, [0, 0, 200, 100], role="body")
+        rendered = "".join(line.text for line in result.mixed_lines)
+        self.assertNotIn("\\", rendered)
+        self.assertNotIn("$", rendered)
+        self.assertIn("r_s", rendered)
+        self.assertIn("ρ_s", rendered)
+
+    def test_closing_punctuation_is_kept_off_the_start_of_a_line(self):
+        style, _ = self.metrics.style_for_role("body")
+        font = self.metrics._font(style["font_id"])
+        text = "甲" * 20 + "。乙"
+        width = (
+            self.metrics._text_width(
+                font,
+                "甲" * 20 + "。",
+                font_size=float(style["font_size_pt"]),
+                char_spacing_em=float(style["char_spacing_em"]),
+            )
+            - 0.1
+        )
+
+        result = self.metrics.measure(text, [0, 0, width, 100], role="body", style=style)
+
+        self.assertFalse(any(line.startswith("。") for line in result.lines))
+        self.assertTrue(result.lines[1].startswith("甲。"))
+
+    def test_closing_punctuation_is_kept_off_the_start_of_a_mixed_line(self):
+        style, _ = self.metrics.style_for_role("body")
+        font = self.metrics._font(style["font_id"])
+        text = "甲" * 20 + "。乙"
+        width = (
+            self.metrics._text_width(
+                font,
+                "甲" * 20 + "。",
+                font_size=float(style["font_size_pt"]),
+                char_spacing_em=float(style["char_spacing_em"]),
+            )
+            - 0.1
+        )
+
+        lines, _, _ = self.metrics._wrap_mixed(
+            text,
+            formula_runs=(),
+            role="body",
+            font=font,
+            font_size=float(style["font_size_pt"]),
+            line_height_multiplier=float(style["line_height_multiplier"]),
+            char_spacing_em=float(style["char_spacing_em"]),
+            available_width=width,
+        )
+
+        self.assertFalse(any(line.startswith("。") for line in lines))
+        self.assertTrue(lines[1].startswith("甲。"))
 
 
 if __name__ == "__main__":

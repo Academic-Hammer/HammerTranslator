@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -12,6 +11,8 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
+
+from hammer_translator._hashing import sha256_file
 
 from .schema import (
     ArtifactRecord,
@@ -70,14 +71,6 @@ class JobStore(Protocol):
     def job_dir(self, job_id: str) -> Path: ...
 
     def resolve_artifact(self, job_id: str, relative_path: str) -> Path: ...
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _safe_filename(name: str) -> str:
@@ -187,7 +180,7 @@ class LocalJobStore:
             relative_path="input/source.pdf",
             media_type="application/pdf",
             size_bytes=destination.stat().st_size,
-            sha256=_sha256(destination),
+            sha256=sha256_file(destination),
             metadata={"original_filename": _safe_filename(source.name)},
         )
         job = JobRecord(

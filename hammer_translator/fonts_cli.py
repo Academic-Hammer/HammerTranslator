@@ -14,6 +14,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable, Sequence
 
+from hammer_translator._hashing import sha256_file
 from hammer_translator.font_assets import FontAssetError, required_font_path
 from hammer_translator.runtime_paths import runtime_paths
 from hammer_translator.translation.config import ConfigError, load_environment_file
@@ -21,14 +22,6 @@ from hammer_translator.translation.config import ConfigError, load_environment_f
 
 class FontInstallError(RuntimeError):
     """A font could not be installed or verified."""
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _bundled_manifest() -> tuple[Path, dict]:
@@ -150,7 +143,7 @@ def install_default_fonts(
             raise FontInstallError(f"unsafe font filename in manifest: {filename}")
         target = destination_dir / filename
         expected_hash = str(record["sha256"])
-        if target.is_file() and _sha256(target) == expected_hash:
+        if target.is_file() and sha256_file(target) == expected_hash:
             report(f"OK {filename} (already verified)")
             continue
         if target.exists() and not repair:

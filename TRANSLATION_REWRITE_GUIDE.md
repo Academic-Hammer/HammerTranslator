@@ -19,7 +19,7 @@
 
 ## 2. 当前实际执行逻辑
 
-当前较完整的路径是 `Colayout-pure/run_translation.py`：
+当前较完整的路径是 `external/Colayout-pure/run_translation.py`：
 
 ```text
 解析 JSON + origin.pdf
@@ -188,7 +188,7 @@
 ### P0：实施重写前必须解决
 
 - [x] **确定唯一翻译入口。**
-  - 问题：根目录 `translate_and_backfill.py` 的导入路径已失效，与 `Colayout-pure/run_translation.py` 行为不一致。
+  - 问题：`legacy/scripts/translate_and_backfill.py` 的导入路径已失效，与 `external/Colayout-pure/run_translation.py` 行为不一致。
   - 修正：建立一个新的标准 CLI，其他入口只作为兼容包装或删除。
   - 验收：`--check`、`--dry-run`、单篇翻译和批量翻译均从同一入口执行。
 
@@ -421,7 +421,7 @@ Step 8D 已完成公式矢量绘制和结构化 QA；生产级验收仍需在 St
 
 Step 9 的代码路径已实现，但付费请求需要本地环境先配置凭据：
 
-- `translate_pdfs.py --run` 是唯一真实执行入口，会明确检查输出目录和 Provider 凭据。
+- `hammer-translator --run` 是唯一真实执行入口（流水线 CLI），会明确检查输出目录和 Provider 凭据。兼容入口 `translate_pdfs.py --run` 仍可使用。
 - 通过 OpenAI-compatible Chat Completions 调用 DeepSeek/OpenAI；密钥从进程环境或项目根目录 `.env` 读取，已存在的进程环境变量优先。
 - `.env` 仅对当前用户可读写并被 `.gitignore` 排除；`.env.example` 只保留空值模板。可用 `--env-file` 显式选择其他文件。
 - 远程错误转换为可恢复/不可恢复类型，不在日志中写入远程响应体或密钥。
@@ -431,10 +431,10 @@ Step 9 的代码路径已实现，但付费请求需要本地环境先配置凭�
 - 中断后可沿用 checkpoint 继续；如果已有单元标记为 `failed`，显式使用 `--retry-failed` 重试，避免静默跳过。
 - 离线回归已覆盖“真实 Provider 代码路径 → `translation-v3` → 薄 Reflow → PDF”；最终验收尚需真实译文及逐页视觉检查。
 
-标准命令行入口：
+标准命令行入口（推荐 `hammer-reflow`，兼容旧脚本 `render_translated_pdf.py`）：
 
 ```bash
-conda run -n hammertrans python render_translated_pdf.py \
+conda run -n hammertrans hammer-reflow \
   path/to/document_translated.json \
   --output path/to/document_translated.pdf \
   --feedback path/to/document_reflow_feedback.json
@@ -456,7 +456,7 @@ conda run -n hammertrans python render_translated_pdf.py \
 
 建议检查点：
 
-- **Step 1（已验收）：安全和唯一入口。** 密钥外置、新 CLI 骨架、preflight/dry-run，不调用真实 API。标准入口为根目录 `translate_pdfs.py`；旧入口在发起 API 请求前停止。
+- **Step 1（已验收）：安全和唯一入口。** 密钥外置、新 CLI 骨架、preflight/dry-run，不调用真实 API。标准入口为 `hammer-translator`（流水线 CLI）；旧入口在发起 API 请求前停止。
 - **Step 2（已验收）：输入 Schema 和 Loader。** 已固定 enriched/content-list 发现规则，实现 `translation-input-v1` 验证器、稳定 `block_id`、PDF 页码/bbox 校验和统一 taxonomy；原始块及其扩展字段不被改写。
 - **Step 3（已验收）：翻译单元和内容保护。** 已实现逻辑段落聚合、表格主体与 caption 分离、`image_caption` 归类、作者/机构保守拆分，以及公式/URL/DOI/引用/代码/HTML/数值占位符的严格往返校验。
 - **Step 4（已验收）：Provider、缓存和断点恢复。** 已实现 Provider 中性请求/响应、本地 `FakeProvider`、SQLite 内容哈希缓存、每文档原子 checkpoint、错误分类/退避重试与 `--simulate` 本地执行入口；未调用真实 API。

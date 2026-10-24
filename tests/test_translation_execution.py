@@ -23,6 +23,7 @@ from hammer_translator.translation.provider import (
     ProviderResponse,
     TranslationRequest,
 )
+from hammer_translator.translation.quality import strip_prompt_wrapper
 from hammer_translator.translation.runner import RunnerConfig, execute_translation_plan
 from hammer_translator.translation.units import build_translation_plan
 
@@ -126,6 +127,34 @@ class ProviderAndCacheTests(unittest.TestCase):
                 )
             self.assertIsNone(cache.get(request.cache_key()))
             self.assertEqual(cache.count(), 0)
+
+
+class PromptWrapperTests(unittest.TestCase):
+    def test_chinese_prompt_envelope_returns_only_translated_body(self):
+        wrapped = (
+            "元素类型：文本。\n"
+            "源语言：英语。\n"
+            "目标语言：简体中文。\n"
+            "在定界符之间翻译源文本。\n"
+            "<源文本>这是一段完整而自然的中文译文。</源文本>"
+        )
+        self.assertEqual(
+            strip_prompt_wrapper(wrapped),
+            "这是一段完整而自然的中文译文。",
+        )
+
+    def test_english_prompt_envelope_returns_only_translated_body(self):
+        wrapped = (
+            "Element type: text.\n"
+            "Source language: English.\n"
+            "Target language: Simplified Chinese.\n"
+            "Translate the source text between the delimiters.\n"
+            "<SOURCE>这是一段完整而自然的中文译文。</SOURCE>"
+        )
+        self.assertEqual(
+            strip_prompt_wrapper(wrapped),
+            "这是一段完整而自然的中文译文。",
+        )
 
 
 class CheckpointTests(unittest.TestCase):
@@ -331,6 +360,230 @@ class TranslationRunnerTests(unittest.TestCase):
             self.assertEqual(result.stats.failed, 1)
             self.assertEqual(cache.count(), 0)
 
+    def test_foreign_protected_token_is_cleaned_without_retry(self):
+        class ForeignTokenProvider(FakeProvider):
+            name = "local-test"
+
+            def __init__(self, unit):
+                super().__init__(model="local-test")
+                self.unit = unit
+                self.modes: list[str] = []
+
+            def translate(self, request: TranslationRequest) -> ProviderResponse:
+                self.modes.append(request.mode)
+                token = self.unit.protected_tokens[0].placeholder
+                return ProviderResponse(
+                    text=f"数值 [[HTP_DEADBEEF_0001]] 保留 {token}",
+                    provider=self.name,
+                    model=self.model,
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plan = _make_plan(root, [_block(0, text="Value $x$ stays")])
+            unit = plan.units[0]
+            provider = ForeignTokenProvider(unit)
+            result = execute_translation_plan(
+                plan,
+                provider=provider,
+                cache=TranslationCache(root / "cache.sqlite3"),
+                checkpoint_path=root / "manifest.json",
+                config=RunnerConfig(base_delay_seconds=0, max_delay_seconds=0),
+                sleep=lambda _: None,
+            )
+
+            self.assertEqual(provider.modes, ["initial"])
+            self.assertEqual(result.stats.completed, 1)
+            output = result.outputs[unit.translation_unit_id]
+            self.assertIn("$x$", output)
+            self.assertNotIn("HTP_", output)
+
+    def test_repair_request_masks_previous_candidate_tokens(self):
+        class RepairProvider(FakeProvider):
+            name = "local-test"
+
+            def __init__(self, unit):
+                super().__init__(model="local-test")
+                self.unit = unit
+                self.modes: list[str] = []
+                self.previous_candidates: list[str] = []
+                self.validation_errors: list[str] = []
+
+            def translate(self, request: TranslationRequest) -> ProviderResponse:
+                self.modes.append(request.mode)
+                if request.mode == "initial":
+                    return ProviderResponse(
+                        text="错误 [[HTP_DEADBEEF_0001]] 没有公式",
+                        provider=self.name,
+                        model=self.model,
+                    )
+                self.previous_candidates.append(
+                    str(request.constraints.get("previous_candidate") or "")
+                )
+                self.validation_errors.append(
+                    str(request.constraints.get("validation_error") or "")
+                )
+                token = self.unit.protected_tokens[0].placeholder
+                return ProviderResponse(
+                    text=f"数值 {token} 保留",
+                    provider=self.name,
+                    model=self.model,
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plan = _make_plan(root, [_block(0, text="Value $x$ stays")])
+            unit = plan.units[0]
+            provider = RepairProvider(unit)
+            result = execute_translation_plan(
+                plan,
+                provider=provider,
+                cache=TranslationCache(root / "cache.sqlite3"),
+                checkpoint_path=root / "manifest.json",
+                config=RunnerConfig(base_delay_seconds=0, max_delay_seconds=0),
+                sleep=lambda _: None,
+            )
+
+            self.assertEqual(provider.modes, ["initial", "repair"])
+            self.assertEqual(result.stats.completed, 1)
+            self.assertNotIn("HTP_", provider.previous_candidates[0])
+            self.assertNotIn("HTP_", provider.validation_errors[0])
+            self.assertIn("错误", provider.previous_candidates[0])
+
+    def test_protected_order_failure_repairs_then_segments(self):
+        class ReorderingProvider(FakeProvider):
+            name = "local-test"
+
+            def __init__(self, unit):
+                super().__init__(model="local-test")
+                self.unit = unit
+                self.modes: list[str] = []
+                self.contexts: list[tuple[str, str]] = []
+
+            def translate(self, request: TranslationRequest) -> ProviderResponse:
+                self.modes.append(request.mode)
+                self.contexts.append(
+                    (
+                        str(request.constraints.get("context_before") or ""),
+                        str(request.constraints.get("context_after") or ""),
+                    )
+                )
+                first, second = (
+                    token.placeholder for token in self.unit.protected_tokens
+                )
+                if request.mode == "segment":
+                    if first in request.protected_text:
+                        return ProviderResponse(
+                            text=f"第一 {first} 在这里。",
+                            provider=self.name,
+                            model=self.model,
+                        )
+                    return ProviderResponse(
+                        text=f"第二 {second} 在那里。",
+                        provider=self.name,
+                        model=self.model,
+                    )
+                return ProviderResponse(
+                    text=f"第一 {second} 在这里。第二 {first} 在那里。",
+                    provider=self.name,
+                    model=self.model,
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plan = _make_plan(
+                root,
+                [_block(0, text="First $x$ is here. Second $y$ is there.")],
+            )
+            unit = plan.units[0]
+            provider = ReorderingProvider(unit)
+            cache = TranslationCache(root / "cache.sqlite3")
+            result = execute_translation_plan(
+                plan,
+                provider=provider,
+                cache=cache,
+                checkpoint_path=root / "manifest.json",
+                config=RunnerConfig(base_delay_seconds=0, max_delay_seconds=0),
+                sleep=lambda _: None,
+            )
+            self.assertEqual(provider.modes, ["initial", "repair", "segment", "segment"])
+            self.assertEqual(result.stats.completed, 1)
+            output = result.outputs[unit.translation_unit_id]
+            self.assertIn("$x$", output)
+            self.assertIn("$y$", output)
+            self.assertLess(output.index("$x$"), output.index("$y$"))
+            self.assertTrue(
+                all("HTP_" not in before + after for before, after in provider.contexts)
+            )
+            self.assertEqual(result.unit_states[unit.translation_unit_id]["execution_status"], "completed")
+
+    def test_segment_fallback_splits_multiple_formulas_in_one_sentence(self):
+        class SingleTokenSegmentProvider(FakeProvider):
+            name = "local-test"
+
+            def __init__(self, unit):
+                super().__init__(model="local-test")
+                self.unit = unit
+                self.modes: list[str] = []
+                self.segment_token_counts: list[int] = []
+
+            def translate(self, request: TranslationRequest) -> ProviderResponse:
+                self.modes.append(request.mode)
+                first, second = (
+                    token.placeholder for token in self.unit.protected_tokens
+                )
+                if request.mode == "segment":
+                    tokens = [
+                        token.placeholder
+                        for token in self.unit.protected_tokens
+                        if token.placeholder in request.protected_text
+                    ]
+                    self.segment_token_counts.append(len(tokens))
+                    if len(tokens) > 1:
+                        return ProviderResponse(
+                            text=f"片段 {tokens[1]} 和 {tokens[0]} 文本。",
+                            provider=self.name,
+                            model=self.model,
+                        )
+                    if tokens:
+                        return ProviderResponse(
+                            text=f"片段 {tokens[0]} 文本。",
+                            provider=self.name,
+                            model=self.model,
+                        )
+                    return ProviderResponse(
+                        text="连接文本。",
+                        provider=self.name,
+                        model=self.model,
+                    )
+                return ProviderResponse(
+                    text=f"开头 {second} 中间 {first} 结尾。",
+                    provider=self.name,
+                    model=self.model,
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plan = _make_plan(
+                root,
+                [_block(0, text="Node $x$ is valid for $y$ values.")],
+            )
+            unit = plan.units[0]
+            provider = SingleTokenSegmentProvider(unit)
+            result = execute_translation_plan(
+                plan,
+                provider=provider,
+                cache=TranslationCache(root / "cache.sqlite3"),
+                checkpoint_path=root / "manifest.json",
+                config=RunnerConfig(base_delay_seconds=0, max_delay_seconds=0),
+                sleep=lambda _: None,
+            )
+            self.assertEqual(provider.modes, ["initial", "repair", "segment", "segment"])
+            self.assertTrue(all(count <= 1 for count in provider.segment_token_counts))
+            self.assertEqual(result.stats.completed, 1)
+            output = result.outputs[unit.translation_unit_id]
+            self.assertLess(output.index("$x$"), output.index("$y$"))
+
     def test_nontranslatable_policies_never_call_provider(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -374,6 +627,31 @@ class TranslationRunnerTests(unittest.TestCase):
             codes = {flag.code for flag in result.quality_reports[unit_id].flags}
             self.assertIn("source_text_unchanged", codes)
             self.assertIn("target_language_missing", codes)
+
+    def test_unchanged_email_and_numeric_literals_are_not_flagged(self):
+        class LocalProvider(FakeProvider):
+            name = "local-test"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plan = _make_plan(
+                root,
+                [
+                    _block(0, text="swati.sachan@liverpool.ac.uk", logical_id=0),
+                    _block(1, text="0.0001", logical_id=1),
+                ],
+            )
+            provider = LocalProvider(transform=lambda request: request.protected_text)
+            result = execute_translation_plan(
+                plan,
+                provider=provider,
+                cache=TranslationCache(root / "cache.sqlite3"),
+                checkpoint_path=root / "manifest.json",
+            )
+            self.assertEqual(result.stats.completed, 2)
+            self.assertEqual(result.stats.qa_needs_review, 0)
+            for unit in plan.units:
+                self.assertFalse(result.quality_reports[unit.translation_unit_id].flags)
 
     def test_empty_translation_is_retried_then_failed_without_cache(self):
         class LocalProvider(FakeProvider):
@@ -426,6 +704,34 @@ class TranslationRunnerTests(unittest.TestCase):
                 result.quality_reports[unit_id].flags[0].code,
                 "prompt_or_meta_leakage",
             )
+
+    def test_prompt_wrapper_is_stripped_before_quality_and_cache(self):
+        class LocalProvider(FakeProvider):
+            name = "local-test"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            plan = _make_plan(root, [_block(0)])
+            wrapped = (
+                "元素类型：文本。\n"
+                "源语言：英语。\n"
+                "目标语言：简体中文。\n"
+                "在定界符之间翻译源文本。\n"
+                "<源文本>这是一段完整而自然的中文译文。</源文本>"
+            )
+            provider = LocalProvider(transform=lambda request: wrapped)
+            cache = TranslationCache(root / "cache.sqlite3")
+            result = execute_translation_plan(
+                plan,
+                provider=provider,
+                cache=cache,
+                checkpoint_path=root / "manifest.json",
+                config=RunnerConfig(max_attempts=1),
+            )
+            unit_id = plan.units[0].translation_unit_id
+            self.assertEqual(result.stats.failed, 0)
+            self.assertEqual(result.outputs[unit_id], "这是一段完整而自然的中文译文。")
+            self.assertEqual(cache.count(), 1)
 
     def test_translation_artifact_keeps_one_canonical_text_and_block_references(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -17,6 +17,7 @@ from typing import Any, Iterable, TYPE_CHECKING
 
 import fitz
 
+from hammer_translator._hashing import sha256_file
 from hammer_translator.runtime_paths import portable_resource_label, runtime_paths
 
 from .formula import FormulaBinding
@@ -53,14 +54,6 @@ class SourceProbe:
     drawing_count: int
     raster_image_count: int
     baseline_from_top_pt: float | None
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _sha256_text(value: str) -> str:
@@ -191,6 +184,18 @@ def _rect_intersects(first: fitz.Rect, second: fitz.Rect) -> bool:
     return not intersection.is_empty and intersection.width > 0 and intersection.height > 0
 
 
+def _rects_equal(
+    first: fitz.Rect,
+    second: fitz.Rect,
+    *,
+    tolerance: float = 1e-6,
+) -> bool:
+    return all(
+        math.isclose(left, right, abs_tol=tolerance)
+        for left, right in zip(tuple(first), tuple(second))
+    )
+
+
 _LATEX_SYMBOLS = {
     "times": "×",
     "cdot": "·",
@@ -212,6 +217,35 @@ _LATEX_SYMBOLS = {
     "phi": "φ",
     "omega": "ω",
 }
+
+
+_DECORATION_COMMANDS = (
+    "acute",
+    "bar",
+    "breve",
+    "check",
+    "ddot",
+    "dot",
+    "grave",
+    "hat",
+    "tilde",
+    "vec",
+)
+
+
+def _repair_latex(value: str) -> str:
+    """Repair a MinerU corruption where an accent swallowed a delimiter.
+
+    MinerU occasionally emits ``\\check { \\} , \\{`` instead of the intended
+    ``\\} , \\{``.  The bogus accent makes the expression unbalanced, so
+    MathJax renders a black ``merror`` box.  Removing the accent restores the
+    delimiter sequence while leaving genuine accents untouched.
+    """
+
+    pattern = re.compile(
+        r"\\(?:" + "|".join(_DECORATION_COMMANDS) + r")\s*\{\s*(\\[{}])\s*,"
+    )
+    return pattern.sub(r"\1,", value)
 
 
 def _visual_signature(value: str, *, latex: bool) -> str:
@@ -245,7 +279,12 @@ def _text_lines(page: fitz.Page, rect: fitz.Rect) -> list[tuple[str, fitz.Rect]]
     return records
 
 
-def _source_probe(page: fitz.Page, binding: FormulaBinding) -> SourceProbe:
+def _source_probe(
+    page: fitz.Page,
+    binding: FormulaBinding,
+    *,
+    require_text_match: bool = True,
+) -> SourceProbe:
     if binding.page_idx is None or binding.source_bbox is None:
         raise FormulaAssetError("source_geometry_missing")
     requested_rect = fitz.Rect(binding.source_bbox)
@@ -265,7 +304,7 @@ def _source_probe(page: fitz.Page, binding: FormulaBinding) -> SourceProbe:
         observed = _visual_signature("".join(text for text, _ in lines), latex=False)
         if expected and observed == expected:
             text_match = "exact"
-        elif expected:
+        elif expected and require_text_match:
             candidates = [
                 line_bbox
                 for text, line_bbox in lines
@@ -282,6 +321,8 @@ def _source_probe(page: fitz.Page, binding: FormulaBinding) -> SourceProbe:
             )
             if rect.is_empty or rect.width <= 0 or rect.height <= 0:
                 raise FormulaAssetError("source_clip_refinement_empty")
+            if _rects_equal(rect, requested_rect):
+                raise FormulaAssetError("source_clip_refinement_unchanged")
             text_match = "refined"
 
     text_spans: list[dict[str, Any]] = []
@@ -414,6 +455,17 @@ def _svg_metrics(svg: str) -> dict[str, Any]:
     if root.tag.split("}")[-1] != "svg":
         raise FormulaAssetError("mathjax_svg_root_invalid")
     for element in root.iter():
+        tag = element.tag.split("}")[-1].lower()
+        if (
+            tag == "merror"
+            or element.get("data-mml-node") == "merror"
+            or element.get("data-mjx-error")
+        ):
+            message = element.get("data-mjx-error") or "unknown_error"
+            raise FormulaAssetError(
+                f"mathjax_svg_rendering_error_{_safe_error_code(str(message))}"
+            )
+    for element in root.iter():
         if element.tag.split("}")[-1].lower() == "script":
             raise FormulaAssetError("mathjax_svg_contains_script")
         for key, value in element.attrib.items():
@@ -469,7 +521,7 @@ def _mathjax_asset(
         "storage": "file",
         "relative_path": path.relative_to(artifact_dir).as_posix(),
         "media_type": "image/svg+xml",
-        "sha256": _sha256_file(path),
+        "sha256": sha256_file(path),
         "metrics": metrics,
         "source_pdf_clip": None,
         "engine": {"name": "mathjax", "version": renderer.version or "unknown"},
@@ -501,6 +553,61 @@ def _failed_asset(
     }
 
 
+def _source_asset_fallback(
+    binding: FormulaBinding,
+    *,
+    source_pdf: Path,
+    source_pdf_sha256: str,
+) -> dict[str, Any]:
+    """Use the source clip when MathJax cannot produce a usable SVG.
+
+    The text signature check is intentionally relaxed here: the LaTeX that
+    MinerU recognised may be malformed even though the source region itself is
+    a perfectly good vector formula.  This is a last-resort path after MathJax
+    has already failed, so preserving the visible source glyphs is preferable
+    to drawing an error box or dropping the formula.
+    """
+
+    document = fitz.open(source_pdf)
+    try:
+        if binding.page_idx is None or not 0 <= binding.page_idx < document.page_count:
+            raise FormulaAssetError("source_page_missing")
+        probe = _source_probe(
+            document[binding.page_idx],
+            binding,
+            require_text_match=False,
+        )
+        return _source_asset(
+            binding,
+            probe=probe,
+            source_pdf_sha256=source_pdf_sha256,
+        )
+    finally:
+        document.close()
+
+
+def _source_fallback_or_failed(
+    binding: FormulaBinding,
+    *,
+    source_pdf: Path,
+    source_pdf_sha256: str,
+    failure_code: str,
+    fallback_reason: str,
+) -> dict[str, Any]:
+    try:
+        return _source_asset_fallback(
+            binding,
+            source_pdf=source_pdf,
+            source_pdf_sha256=source_pdf_sha256,
+        )
+    except (FormulaAssetError, OSError):
+        return _failed_asset(
+            binding,
+            failure_code=failure_code,
+            fallback_reason=fallback_reason,
+        )
+
+
 def build_formula_asset_contract(
     plan: "TranslationPlan",
     artifact_path: str | Path,
@@ -515,7 +622,7 @@ def build_formula_asset_contract(
     bindings = [binding for unit in plan.units for binding in unit.formula_bindings]
     renderer = renderer or MathJaxSvgRenderer()
     source_pdf = plan.document.source_pdf.resolve()
-    source_pdf_sha256 = _sha256_file(source_pdf)
+    source_pdf_sha256 = sha256_file(source_pdf)
     records: dict[str, dict[str, Any]] = {}
     pending_mathjax: list[tuple[FormulaBinding, str]] = []
 
@@ -552,7 +659,7 @@ def build_formula_asset_contract(
         expressions = [
             MathJaxExpression(
                 formula_id=binding.formula_id,
-                latex=binding.latex,
+                latex=_repair_latex(binding.latex),
                 display=binding.kind == "display",
             )
             for binding, _ in pending_mathjax
@@ -562,16 +669,20 @@ def build_formula_asset_contract(
         except FormulaAssetError as exc:
             failure = _safe_error_code(str(exc))
             for binding, reason in pending_mathjax:
-                records[binding.formula_id] = _failed_asset(
+                records[binding.formula_id] = _source_fallback_or_failed(
                     binding,
+                    source_pdf=source_pdf,
+                    source_pdf_sha256=source_pdf_sha256,
                     failure_code=failure,
                     fallback_reason=reason,
                 )
         else:
             for binding, reason in pending_mathjax:
                 if binding.formula_id in render_errors:
-                    records[binding.formula_id] = _failed_asset(
+                    records[binding.formula_id] = _source_fallback_or_failed(
                         binding,
+                        source_pdf=source_pdf,
+                        source_pdf_sha256=source_pdf_sha256,
                         failure_code=f"mathjax_expression_{render_errors[binding.formula_id]}",
                         fallback_reason=reason,
                     )
@@ -586,8 +697,10 @@ def build_formula_asset_contract(
                         fallback_reason=reason,
                     )
                 except (FormulaAssetError, OSError) as exc:
-                    records[binding.formula_id] = _failed_asset(
+                    records[binding.formula_id] = _source_fallback_or_failed(
                         binding,
+                        source_pdf=source_pdf,
+                        source_pdf_sha256=source_pdf_sha256,
                         failure_code=_safe_error_code(str(exc)),
                         fallback_reason=reason,
                     )

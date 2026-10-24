@@ -111,6 +111,40 @@ class RealProviderTests(unittest.TestCase):
         self.assertIn("[[HTP_ABCD1234_0001]]", prompt)
         self.assertNotIn("不应放入提示词", prompt)
 
+    def test_repair_prompt_includes_validation_feedback_and_previous_output(self):
+        messages = build_translation_messages(
+            _request(
+                mode="repair",
+                constraints={
+                    "validation_error": "protected token order changed",
+                    "previous_candidate": "错误译文 [[HTP_ABCD1234_0001]]",
+                },
+            )
+        )
+        prompt = json.dumps(messages, ensure_ascii=False)
+        self.assertIn("protected token order changed", prompt)
+        self.assertIn("<PREVIOUS>", prompt)
+        self.assertIn("错误译文", prompt)
+        self.assertIn("keep formula tokens in their original relative order", prompt)
+
+    def test_segment_prompt_uses_context_but_translates_only_target(self):
+        messages = build_translation_messages(
+            _request(
+                mode="segment",
+                constraints={
+                    "segment_index": 2,
+                    "segment_count": 3,
+                    "context_before": "上一段",
+                    "context_after": "下一段",
+                },
+            )
+        )
+        prompt = json.dumps(messages, ensure_ascii=False)
+        self.assertIn("Segment 2 of 3", prompt)
+        self.assertIn("上一段", prompt)
+        self.assertIn("下一段", prompt)
+        self.assertIn("Translate only the text inside <SOURCE>", prompt)
+
     def test_rate_limit_is_classified_without_remote_body(self):
         class RateLimitFailure(Exception):
             status_code = 429

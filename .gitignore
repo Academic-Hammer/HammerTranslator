@@ -39,6 +39,9 @@ tmp/
 var/
 input_pdf/
 
+# Local paper corpus and translated snapshots used for manual evaluation.
+paper/
+
 # Local datasets, historical outputs, and archives
 local_data/
 /270-new/
@@ -51,3 +54,6 @@ legacy/projects/
 # directory documentation, but do not version third-party repositories here.
 external/*
 !external/README.md
+
+# Ad-hoc rendering experiments and scratch scripts
+.codex-render/

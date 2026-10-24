@@ -23,6 +23,7 @@ from .units import TranslationPlan, TranslationUnit
 
 STYLE_SCHEMA_VERSION = "layout-style-v1"
 MEASUREMENT_ENGINE_VERSION = "layout-metrics-v2"
+MIN_PRACTICAL_LINE_HEIGHT_MULTIPLIER = 1.15
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,10 @@ ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
 
 
 def style_role_for(block: LoadedBlock, element_type: ElementType) -> str:
+    override = str(block.raw.get("style_role") or "").strip()
+    if override in ROLE_DEFAULTS:
+        return override
+
     raw_level = block.raw.get("text_level")
     try:
         text_level = int(raw_level) if raw_level is not None else None
@@ -378,7 +383,16 @@ def build_golden_style_profile(plan: TranslationPlan) -> dict[str, Any]:
                     "max_shrink_ratio": shrink,
                 },
                 "line_height_multiplier": {
-                    "min": round(golden_line * 0.92, 4),
+                    # Short single-line labels can have a fixed bbox that is
+                    # smaller than a full body line box.  Keep the measured
+                    # style while allowing a practical minimum for those boxes.
+                    "min": round(
+                        min(
+                            golden_line * 0.92,
+                            MIN_PRACTICAL_LINE_HEIGHT_MULTIPLIER,
+                        ),
+                        4,
+                    ),
                     "max": round(golden_line * 1.05, 4),
                 },
                 "char_spacing_em": {"min": -0.04, "max": 0.02},
